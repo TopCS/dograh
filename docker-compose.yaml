@@ -330,8 +330,6 @@ volumes:
   redis_data:
   minio-data:
     driver: local
-  shared-tmp:
-    driver: local
   nginx-generated:
     driver: local
   coturn-generated:
