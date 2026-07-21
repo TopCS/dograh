@@ -28,6 +28,12 @@ async def voice_session(ctx: agents.JobContext, config: dict) -> AgentSession:
 
     if config.get("orchestrator_mode") == "agentos":
         from app.translator.workflow import translate_workflow
+        from app.tools.registry import build_tools
+
+        # Build tools (KB search, ViciDial) for the workflow agents
+        tools_proxy = LuminaAgent(config=config)
+        config["_tools"] = build_tools(tools_proxy)
+
         workflow_graph_data = config.get("workflow_graph")
         if workflow_graph_data:
             from app.models import WorkflowGraph

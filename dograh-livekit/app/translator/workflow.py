@@ -48,6 +48,7 @@ def translate_workflow(graph: WorkflowGraph, agent_config: dict[str, Any]) -> Wo
         agents_by_id[node.id] = Agent(
             name=node.data.name or node.id,
             instructions=instructions,
+            tools=agent_config.get("_tools", []),
         )
 
     steps: list[Step | Router] = []
