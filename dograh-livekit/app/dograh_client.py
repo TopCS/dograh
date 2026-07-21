@@ -96,3 +96,14 @@ class DograhClient:
                 },
             )
             response.raise_for_status()
+
+    async def _post(self, path: str, data: dict) -> dict:
+        """Generic POST to Dograh internal API. Returns parsed JSON."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{self._base_url}{path}",
+                headers=self._headers,
+                json=data,
+            )
+            response.raise_for_status()
+            return response.json()

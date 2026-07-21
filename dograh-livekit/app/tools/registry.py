@@ -1,6 +1,7 @@
 """Tool registry — maps tool names to factory functions."""
 
 from app.tools.kb_search import make_kb_search_tool
+from app.tools.vicidial import make_vicidial_tools
 
 
 def build_tools(agent_proxy) -> list:
@@ -11,9 +12,12 @@ def build_tools(agent_proxy) -> list:
     if kb_refs:
         tools.append(make_kb_search_tool(agent_proxy))
 
+    tools.extend(make_vicidial_tools(agent_proxy))
+
     return tools
 
 
 TOOL_REGISTRY = {
     "search_knowledge": make_kb_search_tool,
+    "vicidial": make_vicidial_tools,
 }

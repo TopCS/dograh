@@ -211,3 +211,80 @@ async def hangup_session(
         pass
 
     return {"status": "ok"}
+
+
+# ── ViciDial operations ─────────────────────────────────────────────────────
+
+
+class VicidialHangupRequest(BaseModel):
+    org_id: str
+    identity: dict
+
+
+class VicidialTransferRequest(BaseModel):
+    org_id: str
+    identity: dict
+    destination: str
+
+
+class VicidialUpdateLeadRequest(BaseModel):
+    org_id: str
+    identity: dict
+    fields: dict[str, str]
+
+
+@router.post("/vicidial/hangup")
+async def vicidial_hangup(
+    body: VicidialHangupRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Hangup the customer leg via ViciDial ra_call_control."""
+    adapter = await _get_vicidial_adapter(body.org_id)
+    if adapter is None:
+        return {"ok": False, "error": "ViciDial not configured for this org"}
+    result = await adapter.hangup(body.identity)
+    return {"ok": result.ok, "action": result.action, "message": result.message}
+
+
+@router.post("/vicidial/transfer")
+async def vicidial_transfer(
+    body: VicidialTransferRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Transfer the customer to an in-group via ViciDial ra_call_control."""
+    adapter = await _get_vicidial_adapter(body.org_id)
+    if adapter is None:
+        return {"ok": False, "error": "ViciDial not configured for this org"}
+    result = await adapter.transfer(body.identity, body.destination)
+    return {"ok": result.ok, "action": result.action, "message": result.message}
+
+
+@router.post("/vicidial/update-lead")
+async def vicidial_update_lead(
+    body: VicidialUpdateLeadRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Update ViciDial lead fields via non_agent_api."""
+    adapter = await _get_vicidial_adapter(body.org_id)
+    if adapter is None:
+        return {"ok": False, "error": "ViciDial not configured for this org"}
+    result = await adapter.update_fields(body.identity, body.fields)
+    return {"ok": result.ok, "action": result.action, "message": result.message}
+
+
+async def _get_vicidial_adapter(org_id: str):
+    """Build a VicidialAdapter from the org's ARI telephony config."""
+    from api.services.telephony.providers.ari.external_pbx import create_adapter
+    from api.db import db_client
+
+    try:
+        configs = await db_client.get_telephony_configs_for_org(int(org_id))
+    except Exception:
+        return None
+
+    for cfg in configs:
+        creds = cfg.credentials if hasattr(cfg, "credentials") else {}
+        external_pbx = creds.get("external_pbx")
+        if external_pbx and external_pbx.get("type") == "vicidial":
+            return create_adapter(external_pbx)
+    return None
