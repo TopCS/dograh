@@ -81,6 +81,12 @@ async def lumina_session(ctx: agents.JobContext):
         config["channel"] = channel
         config["user_id"] = meta.get("user_id") or meta.get("sender_phone") or ""
 
+        # Pass ViciDial call identity from room metadata (SIP headers)
+        vicidial_identity = meta.get("vicidial_identity")
+        if vicidial_identity and isinstance(vicidial_identity, dict):
+            config["vicidial_identity"] = vicidial_identity
+            logger.info("ViciDial identity captured: callerid=%s", vicidial_identity.get("callerid", "?"))
+
         llm_cfg = config.get("llm_config") or {}
         llm_model = str(llm_cfg.get("model") or "unknown")
         session_record = await write_session_record(
