@@ -65,12 +65,13 @@ async def get_runtime_config(
     """Return full runtime config for a workflow — consumed by dograh-livekit."""
     from api.db import db_client
 
-    workflow = await db_client.get_workflow(workflow_id)
+    # System/runtime path — use unscoped lookup
+    workflow = await db_client.get_workflow_by_id(workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
-    # Get published definition
-    published = await db_client.get_published_workflow_definition(workflow_id)
+    # Get published version via the released_definition relationship
+    published = workflow.released_definition or workflow.current_definition
     if not published:
         raise HTTPException(status_code=404, detail="No published version")
 
