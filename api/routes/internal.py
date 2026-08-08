@@ -58,6 +58,11 @@ class HangupRequest(BaseModel):
     outcome: str = "completed"
     channel: str = "voice_sip"
 
+    @field_validator("session_id", "workflow_id", "org_id", mode="before")
+    @classmethod
+    def _hangup_coerce_to_str(cls, v):
+        return str(v) if not isinstance(v, str) else v
+
 
 # ── Runtime Config ──────────────────────────────────────────────────────────
 
