@@ -90,8 +90,8 @@ class DograhClient:
                 f"{self._base_url}/api/internal/sessions/hangup",
                 headers=self._headers,
                 json={
-                    "session_id": session_id,
-                    "org_id": org_id,
+                    "session_id": str(session_id),
+                    "org_id": str(org_id),
                     "workflow_id": str(workflow_id),
                     **kwargs,
                 },
