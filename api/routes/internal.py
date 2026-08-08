@@ -7,7 +7,7 @@ Not versioned — these are private, system-internal endpoints.
 import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 router = APIRouter(
     prefix="/api/internal",
@@ -42,6 +42,11 @@ class CreateSessionRequest(BaseModel):
     channel: str = "voice_sip"
     agent_id: str = ""
     llm_model: str = "unknown"
+
+    @field_validator("workflow_id", "org_id", mode="before")
+    @classmethod
+    def _coerce_to_str(cls, v):
+        return str(v) if not isinstance(v, str) else v
 
 
 class HangupRequest(BaseModel):

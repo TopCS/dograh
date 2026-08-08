@@ -56,17 +56,18 @@ class DograhClient:
     ) -> dict[str, Any]:
         """Create a session record in Dograh."""
         async with httpx.AsyncClient(timeout=10.0) as client:
+            body = {
+                "workflow_id": str(workflow_id),
+                "org_id": str(org_id),
+                "room_name": room_name,
+                "channel": channel,
+                "agent_id": str(agent_id),
+                **kwargs,
+            }
             response = await client.post(
                 f"{self._base_url}/api/internal/sessions",
                 headers=self._headers,
-                json={
-                    "workflow_id": str(workflow_id),
-                    "org_id": org_id,
-                    "room_name": room_name,
-                    "channel": channel,
-                    "agent_id": agent_id,
-                    **kwargs,
-                },
+                json=body,
             )
             response.raise_for_status()
             return response.json()
