@@ -8,6 +8,17 @@ from livekit.agents import AgentServer
 
 from app.config import settings
 
+# ── Pre-import livekit plugins on the MAIN THREAD ────────────────────────
+# LiveKit Agents requires plugins to be registered on the main thread. Jobs
+# run on worker threads (JobExecutorType.THREAD below), so plugin modules
+# must be imported here — before AgentServer is constructed — or their
+# register_plugin() raises "Plugins must be registered on the main thread".
+from livekit.plugins import google as _p_google  # noqa: F401, E402
+from livekit.plugins import openai as _p_openai  # noqa: F401, E402
+from livekit.plugins import deepgram as _p_deepgram  # noqa: F401, E402
+from livekit.plugins import silero as _p_silero  # noqa: F401, E402
+from livekit.plugins import cartesia as _p_cartesia  # noqa: F401, E402
+
 os.environ["GOOGLE_API_KEY"] = settings.google_api_key
 os.environ["OPENAI_API_KEY"] = settings.openai_api_key
 os.environ["LIVEKIT_URL"] = settings.livekit_url
