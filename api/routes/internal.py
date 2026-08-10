@@ -88,6 +88,52 @@ async def get_runtime_config(
     definition = published.workflow_json or {}
     configs = published.workflow_configurations or {}
 
+    # Resolve effective model config (org config + workflow model_overrides),
+    # the same path Pipecat uses.
+    effective_llm = None
+    effective_stt = None
+    effective_tts = None
+    try:
+        from api.services.configuration.ai_model_configuration import (
+            get_effective_ai_model_configuration_for_workflow,
+        )
+        effective = await get_effective_ai_model_configuration_for_workflow(
+            organization_id=workflow.organization_id,
+            workflow_configurations=configs,
+        )
+        if effective.realtime:
+            effective_llm = effective.realtime
+        elif effective.llm:
+            effective_llm = effective.llm
+        effective_tts = effective.tts
+        effective_stt = effective.stt
+    except Exception:
+        pass
+
+    def _cfg(model_obj):
+        from pydantic import BaseModel
+        if model_obj is None:
+            return {}
+        if isinstance(model_obj, dict):
+            return model_obj
+        if isinstance(model_obj, BaseModel):
+            return model_obj.model_dump(exclude_none=True)
+        return {}
+
+    # Build a provider name the dograh-livekit worker understands. Realtime
+    # providers (google_realtime, openai_realtime) are exposed under llm_config
+    # so the worker's REALTIME_LLM_PROVIDERS picks the realtime path.
+    def _llm_payload(model_obj):
+        d = _cfg(model_obj)
+        if not d:
+            return d
+        provider = d.get("provider")
+        if provider in ("google", "gemini"):
+            d["provider"] = "google_realtime"
+        elif provider in ("openai",):
+            d["provider"] = "openai_realtime"
+        return d
+
     # Resolve tools from UUIDs
     tools = []
     for node in definition.get("nodes", []):
@@ -124,9 +170,9 @@ async def get_runtime_config(
         "agent_id": str(workflow.id),
         "agent_name": workflow.name,
         "workflow_graph": definition,
-        "llm_config": configs.get("llm_config", {}),
-        "stt_config": configs.get("stt_config", {}),
-        "tts_config": configs.get("tts_config", {}),
+        "llm_config": _llm_payload(effective_llm),
+        "stt_config": _cfg(effective_stt),
+        "tts_config": _cfg(effective_tts),
         "system_prompt": system_prompt or configs.get("system_prompt", ""),
         "greeting_message": greeting_message,
         "tools": tools,
