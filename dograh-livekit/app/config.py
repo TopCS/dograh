@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     dograh_api_url: str = "http://api:8000"
     dograh_internal_token: str = ""
     google_api_key: str = ""
+    google_application_credentials: str = ""
+    google_cloud_project: str = ""
     openai_api_key: str = ""
     deepgram_api_key: str = ""
     cartesia_api_key: str = ""

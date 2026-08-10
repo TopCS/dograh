@@ -20,6 +20,10 @@ from livekit.plugins import silero as _p_silero  # noqa: F401, E402
 from livekit.plugins import cartesia as _p_cartesia  # noqa: F401, E402
 
 os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+if settings.google_application_credentials:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+if settings.google_cloud_project:
+    os.environ["GOOGLE_CLOUD_PROJECT"] = settings.google_cloud_project
 os.environ["OPENAI_API_KEY"] = settings.openai_api_key
 os.environ["LIVEKIT_URL"] = settings.livekit_url
 os.environ["LIVEKIT_API_KEY"] = settings.livekit_api_key

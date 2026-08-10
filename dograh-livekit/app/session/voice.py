@@ -1,6 +1,7 @@
 """Voice session builder — realtime or STT+LLM+TTS fallback."""
 
 import logging
+import os
 from livekit import agents, rtc
 from livekit.agents import AgentSession, room_io
 
@@ -72,11 +73,34 @@ async def _build_realtime_session(
         from livekit.plugins import google
         instructions = config.get("system_prompt", "")
         llm_max_tokens = config.get("llm_config", {}).get("max_output_tokens") or None
-        kwargs = dict(model=llm_model, temperature=llm_temperature, instructions=instructions, voice=llm_voice)
+
+        k = dict(model=llm_model, temperature=llm_temperature, instructions=instructions, voice=llm_voice)
         if llm_max_tokens:
-            kwargs["max_output_tokens"] = llm_max_tokens
-        session = AgentSession(llm=google.realtime.RealtimeModel(**kwargs))
-        await session.start(room=ctx.room, agent=agent, room_options=room_options)
+            k["max_output_tokens"] = llm_max_tokens
+
+        # Vertex AI path (uses GCP application credentials), matching Luminai.
+        # Enabled when llm_config.vertexai is true OR the model is a gemini-live
+        # native-audio model (only available on Vertex).
+        is_vertex = (
+            bool(config.get("llm_config", {}).get("vertexai", False))
+            or str(llm_model).startswith("gemini-live-")
+        )
+
+        if is_vertex:
+            # _gcp_credentials is an optional google.auth Credentials built by the
+            # entrypoint from per-org GCP service-account info. When None, the
+            # plugin falls back to GOOGLE_APPLICATION_CREDENTIALS / ADC.
+            k["vertexai"] = True
+            k["project"] = config.get("llm_config", {}).get("project", "")
+            k["location"] = config.get("llm_config", {}).get("location", "europe-west1")
+            k["credentials"] = config.get("_gcp_credentials")
+            session = AgentSession(llm=google.realtime.RealtimeModel(**k))
+            await session.start(room=ctx.room, agent=agent, room_options=room_options)
+        else:
+            # Gemini API (plain key)
+            k["api_key"] = config.get("llm_config", {}).get("api_key") or os.getenv("GOOGLE_API_KEY", "")
+            session = AgentSession(llm=google.realtime.RealtimeModel(**k))
+            await session.start(room=ctx.room, agent=agent, room_options=room_options)
     elif llm_provider == "openai_realtime":
         from livekit.plugins import openai
         session = AgentSession(
