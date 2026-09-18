@@ -9,12 +9,13 @@ import {
 import { EdgeChange, NodeChange } from "@xyflow/system";
 import { useRouter } from "next/navigation";
 import posthog from "posthog-js";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useWorkflowStore } from "@/app/workflow/[workflowId]/stores/workflowStore";
 import {
     createWorkflowRunApiV1WorkflowWorkflowIdRunsPost,
+    getDefaultConfigurationsApiV1UserConfigurationsDefaultsGet,
     updateWorkflowApiV1WorkflowWorkflowIdPut,
     validateWorkflowApiV1WorkflowWorkflowIdValidatePost
 } from "@/client";
@@ -24,7 +25,11 @@ import { FlowEdge, FlowNode, FlowNodeData, NodeType } from "@/components/flow/ty
 import { PostHogEvent } from "@/constants/posthog-events";
 import logger from '@/lib/logger';
 import { getNextNodeId, getRandomId } from "@/lib/utils";
-import { DEFAULT_WORKFLOW_CONFIGURATIONS, WorkflowConfigurations } from "@/types/workflow-configurations";
+import {
+    resolveWorkflowConfigurations,
+    type WorkflowConfigurationDefaults,
+    type WorkflowConfigurations,
+} from "@/types/workflow-configurations";
 
 // Pull a WorkflowError[] out of any validate-shaped payload — works whether
 // the body is the raw `{ is_valid, errors }` (validate success-with-errors)
@@ -111,6 +116,10 @@ export const useWorkflowState = ({
 }: UseWorkflowStateProps) => {
     const router = useRouter();
     const rfInstance = useRef<ReactFlowInstance<FlowNode, FlowEdge> | null>(null);
+    const [workflowConfigurationDefaults, setWorkflowConfigurationDefaults] =
+        useState<WorkflowConfigurationDefaults | null>(null);
+    const [workflowConfigurationDefaultsLoaded, setWorkflowConfigurationDefaultsLoaded] =
+        useState(false);
 
     // Spec catalog. Workflow init waits on this to populate defaults; node
     // creation looks up per-type schemas through it.
@@ -127,6 +136,7 @@ export const useWorkflowState = ({
         templateContextVariables,
         workflowConfigurations,
         initializeWorkflow,
+        commitDeletion,
         setNodes,
         setEdges,
         setWorkflowName,
@@ -149,10 +159,44 @@ export const useWorkflowState = ({
     const canUndo = useWorkflowStore((state) => state.canUndo());
     const canRedo = useWorkflowStore((state) => state.canRedo());
 
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadWorkflowConfigurationDefaults = async () => {
+            try {
+                const response = await getDefaultConfigurationsApiV1UserConfigurationsDefaultsGet();
+                if (cancelled) return;
+
+                if (response.error || !response.data?.workflow_configurations) {
+                    logger.error(
+                        `Failed to load workflow configuration defaults: ${JSON.stringify(response.error)}`,
+                    );
+                    setWorkflowConfigurationDefaults(null);
+                } else {
+                    setWorkflowConfigurationDefaults(response.data.workflow_configurations);
+                }
+            } catch (error) {
+                if (cancelled) return;
+                logger.error(`Failed to load workflow configuration defaults: ${error}`);
+                setWorkflowConfigurationDefaults(null);
+            } finally {
+                if (!cancelled) {
+                    setWorkflowConfigurationDefaultsLoaded(true);
+                }
+            }
+        };
+
+        loadWorkflowConfigurationDefaults();
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
     // Initialize workflow on mount. Waits for the spec catalog so defaults
     // (allow_interrupt, prompt placeholders, etc.) come from one source.
     useEffect(() => {
-        if (specsLoading) return;
+        if (specsLoading || !workflowConfigurationDefaultsLoaded) return;
 
         const startSpec = bySpecName.get(NodeType.START_CALL);
         const fallbackStartNodes: FlowNode[] = startSpec
@@ -176,16 +220,21 @@ export const useWorkflowState = ({
             })
             : fallbackStartNodes;
 
+        const resolvedInitialWorkflowConfigurations = resolveWorkflowConfigurations(
+            initialWorkflowConfigurations,
+            workflowConfigurationDefaults,
+        );
+
         initializeWorkflow(
             workflowId,
             initialWorkflowName,
             initialNodes,
             initialFlow?.edges ?? [],
             initialTemplateContextVariables,
-            initialWorkflowConfigurations,
-            initialWorkflowConfigurations?.dictionary ?? ''
+            resolvedInitialWorkflowConfigurations,
+            resolvedInitialWorkflowConfigurations.dictionary ?? ''
         );
-    }, [workflowId, initialWorkflowName, initialFlow?.nodes, initialFlow?.edges, initialTemplateContextVariables, initialWorkflowConfigurations, initializeWorkflow, specsLoading, bySpecName]);
+    }, [workflowId, initialWorkflowName, initialFlow?.nodes, initialFlow?.edges, initialTemplateContextVariables, initialWorkflowConfigurations, initializeWorkflow, specsLoading, bySpecName, workflowConfigurationDefaultsLoaded, workflowConfigurationDefaults]);
 
     // Set up keyboard shortcuts for undo/redo
     useEffect(() => {
@@ -445,6 +494,10 @@ export const useWorkflowState = ({
         [setNodes],
     );
 
+    const onDelete = useCallback(() => {
+        commitDeletion();
+    }, [commitDeletion]);
+
     const onRun = async (mode: string) => {
         if (!user?.id) return;
         const workflowRunName = `WR-${getRandomId()}`;
@@ -515,9 +568,12 @@ export const useWorkflowState = ({
                 throw new Error(msg);
             }
 
-            const savedConfigurations = response.data?.workflow_configurations
-                ? (response.data.workflow_configurations as WorkflowConfigurations)
-                : configurationsWithDictionary;
+            const savedConfigurations = resolveWorkflowConfigurations(
+                response.data?.workflow_configurations
+                    ? (response.data.workflow_configurations as Partial<WorkflowConfigurations>)
+                    : configurationsWithDictionary,
+                workflowConfigurationDefaults,
+            );
             setWorkflowConfigurations(savedConfigurations);
             // Set name directly in the store to avoid setWorkflowName which marks isDirty: true
             useWorkflowStore.setState({ workflowName: newWorkflowName });
@@ -526,12 +582,14 @@ export const useWorkflowState = ({
             logger.error(`Error saving workflow configurations: ${error}`);
             throw error;
         }
-    }, [workflowId, user, setWorkflowConfigurations]);
+    }, [workflowId, user, setWorkflowConfigurations, workflowConfigurationDefaults]);
 
     // Save dictionary
     const saveDictionary = useCallback(async (newDictionary: string) => {
         if (!user) return;
-        const currentConfigurations = useWorkflowStore.getState().workflowConfigurations ?? DEFAULT_WORKFLOW_CONFIGURATIONS;
+        const currentConfigurations =
+            useWorkflowStore.getState().workflowConfigurations
+            ?? resolveWorkflowConfigurations(null, workflowConfigurationDefaults);
         const updatedConfigurations: WorkflowConfigurations = { ...currentConfigurations, dictionary: newDictionary };
         try {
             await updateWorkflowApiV1WorkflowWorkflowIdPut({
@@ -550,7 +608,7 @@ export const useWorkflowState = ({
             logger.error(`Error saving dictionary: ${error}`);
             throw error;
         }
-    }, [workflowId, workflowName, user, setDictionary, setWorkflowConfigurations]);
+    }, [workflowId, workflowName, user, setDictionary, setWorkflowConfigurations, workflowConfigurationDefaults]);
 
     // Update rfInstance when it changes
     useEffect(() => {
@@ -585,6 +643,7 @@ export const useWorkflowState = ({
         onConnect,
         onEdgesChange,
         onNodesChange,
+        onDelete,
         onRun,
         saveTemplateContextVariables,
         saveWorkflowConfigurations,

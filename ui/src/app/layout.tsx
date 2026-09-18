@@ -3,12 +3,9 @@ import "./globals.css";
 import type { Metadata } from "next";
 import { Geist_Mono } from "next/font/google";
 import { Manrope, Space_Grotesk } from "next/font/google";
-import { NextIntlClientProvider } from "next-intl";
 import { cookies } from "next/headers";
+import { NextIntlClientProvider } from "next-intl";
 import { Suspense } from "react";
-
-import itMessages from "../../messages/it.json";
-import enMessages from "../../messages/en.json";
 
 import ChatwootWidget from "@/components/ChatwootWidget";
 import AppLayout from "@/components/layout/AppLayout";
@@ -22,6 +19,9 @@ import { OnboardingProvider } from "@/context/OnboardingContext";
 import { OrgConfigProvider } from "@/context/OrgConfigContext";
 import { TelephonyConfigWarningsProvider } from "@/context/TelephonyConfigWarningsContext";
 import { AuthProvider } from "@/lib/auth";
+
+import enMessages from "../../messages/en.json";
+import itMessages from "../../messages/it.json";
 
 
 const bodyFont = Manrope({

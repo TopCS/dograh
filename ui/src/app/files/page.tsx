@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, Upload } from "lucide-react";
+import { Upload } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 

@@ -25,6 +25,7 @@ _ACTIVE_TOKEN = SimpleNamespace(
     expires_at=None,
     allowed_domains=[],
     workflow_id=1,
+    organization_id=11,
     created_by=7,
     usage_limit=None,
     usage_count=0,
@@ -37,6 +38,7 @@ _RESTRICTED_TOKEN = SimpleNamespace(
     expires_at=None,
     allowed_domains=["allowed.example.com"],
     workflow_id=2,
+    organization_id=11,
     created_by=7,
     usage_limit=None,
     usage_count=0,
@@ -49,6 +51,7 @@ _LOCALHOST_TOKEN = SimpleNamespace(
     expires_at=None,
     allowed_domains=["localhost:3000", "localhost:3020"],
     workflow_id=3,
+    organization_id=11,
     created_by=7,
     usage_limit=None,
     usage_count=0,
@@ -86,6 +89,14 @@ def _patch_db(monkeypatch):
     async def _create_workflow_run(**_kwargs):
         return SimpleNamespace(id=123)
 
+    async def _get_workflow(*_args, **_kwargs):
+        return SimpleNamespace(
+            id=1,
+            released_definition=SimpleNamespace(id=55, template_context_variables={}),
+            current_definition=None,
+            template_context_variables={},
+        )
+
     async def _noop(*_args, **_kwargs):
         return None
 
@@ -104,6 +115,10 @@ def _patch_db(monkeypatch):
     monkeypatch.setattr(
         "api.routes.public_embed.db_client.create_workflow_run",
         _create_workflow_run,
+    )
+    monkeypatch.setattr(
+        "api.routes.public_embed.db_client.get_workflow",
+        _get_workflow,
     )
     monkeypatch.setattr(
         "api.routes.public_embed.db_client.create_embed_session",

@@ -117,6 +117,7 @@ function RenderWorkflow({
         onConnect,
         onEdgesChange,
         onNodesChange,
+        onDelete,
     } = useWorkflowState({
         initialWorkflowName,
         workflowId,
@@ -443,7 +444,7 @@ function RenderWorkflow({
     const renameWorkflow = useCallback(async (newName: string) => {
         // The header doesn't render the pencil until the page has mounted with
         // initial data, so workflowConfigurations is non-null by the time this
-        // runs. Throw rather than silently sending DEFAULT_WORKFLOW_CONFIGURATIONS,
+        // runs. Throw rather than silently sending fallback workflow configurations,
         // which would overwrite the saved server-side config.
         if (!workflowConfigurations) {
             throw new Error("Workflow configurations not loaded");
@@ -514,6 +515,7 @@ function RenderWorkflow({
                                 edges={edges}
                                 onNodesChange={onNodesChange}
                                 onEdgesChange={onEdgesChange}
+                                onDelete={onDelete}
                                 nodeTypes={nodeTypes}
                                 edgeTypes={edgeTypes}
                                 onConnect={isViewingHistoricalVersion ? undefined : onConnect}

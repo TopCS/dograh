@@ -1,0 +1,94 @@
+# LiveKit bridge tests
+#
+# Standalone CI for the dograh-livekit bridge (Option A from DOGR-001: a
+# dedicated workflow rather than extending api-tests.yml). Keeps bridge
+# development decoupled from api/pipecat CI: only PRs touching
+# dograh-livekit/** (or this workflow file itself) trigger it.
+#
+# The bridge tests use respx HTTP mocks (see dograh-livekit/tests/conftest.py)
+# and run without a live LiveKit server or real upstream API keys — only the
+# stub credentials below are set. No postgres/redis services are needed.
+#
+# Install notes:
+# - The bridge imports only livekit, agno, httpx and pydantic — not pipecat or
+#   api modules — so this job installs just dograh-livekit + its dev extras.
+#   If the bridge starts importing pipecat or api shared code, add
+#   `./scripts/setup_requirements.sh --dev` back before the install step.
+# - python -m venv + uv mirror the api-tests.yml pattern; uv comes
+#   preinstalled on GitHub-hosted ubuntu runners.
+name: LiveKit bridge tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "dograh-livekit/**"
+      - ".github/workflows/livekit-bridge-tests.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # Stub bridge credentials — tests never reach a live LiveKit server.
+      LIVEKIT_URL: ws://test.livekit.io
+      LIVEKIT_API_KEY: test-key
+      LIVEKIT_API_SECRET: test-secret
+      DOGRAH_API_URL: http://test-dograh:8000
+      DOGRAH_INTERNAL_TOKEN: test-token
+      LOG_LEVEL: DEBUG
+      PYTHONPATH: ${{ github.workspace }}
+      # The failure-notification step is skipped when this secret is not
+      # configured on the repository (e.g. fork without SLACK_WEBHOOK_URL).
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout repo (with pipecat submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Create Python virtual environment
+        run: |
+          python -m venv .venv
+          echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install dograh-livekit dev dependencies
+        run: |
+          if [ ! -d dograh-livekit ]; then
+            echo "::error::dograh-livekit/ is not present in this tree (paths filter ran, but the merge ref lacks the package)."
+            exit 1
+          fi
+          if command -v uv >/dev/null 2>&1; then
+            uv pip install --python .venv/bin/python -e "./dograh-livekit[dev]"
+          else
+            python -m pip install -e "./dograh-livekit[dev]"
+          fi
+
+      - name: Run pytest
+        working-directory: dograh-livekit
+        run: pytest tests/ -xvs
+
+      - name: Send Slack notification - Failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1.26.0
+        env:
+          # Job-level SLACK_WEBHOOK_URL (empty when the secret is not
+          # configured) lets the guard above skip cleanly.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          payload: |
+            {
+              "text": "❌ LiveKit bridge tests failed on ${{ github.ref_name }} by ${{ github.actor }} - <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+            }

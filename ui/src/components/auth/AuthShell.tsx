@@ -9,9 +9,8 @@
 
 "use client";
 
-import type { ReactNode } from "react";
-
 import { useMessages, useTranslations } from "next-intl";
+import type { ReactNode } from "react";
 
 import { BrandLogo } from "@/components/BrandLogo";
 

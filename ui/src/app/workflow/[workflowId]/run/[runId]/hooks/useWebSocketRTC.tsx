@@ -393,8 +393,10 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
                                 // Stop the connection and surface the handled service error.
                                 cleanupConnection({ graceful: false, status: 'failed' });
                             } else {
-                                // Log other errors as actual errors
+                                const serverErrorMessage = message.payload?.message || 'Server error';
                                 logger.error('Server error:', message.payload);
+                                setPermissionError(serverErrorMessage);
+                                cleanupConnection({ graceful: false, status: 'failed' });
                             }
                             break;
 
@@ -606,7 +608,7 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
                 }
             };
         });
-    }, [getWebSocketUrl, cleanupConnection]);
+    }, [getWebSocketUrl, cleanupConnection, setPermissionError]);
 
     const negotiate = async () => {
         const pc = pcRef.current;
@@ -661,6 +663,7 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
         setIsStarting(true);
         setConnectionActive(false);
         setIsCompleted(false);
+        setPermissionError(null);
         setConnectionStatus('connecting');
 
         try {
@@ -679,11 +682,11 @@ export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initia
                     if (turnResponse.data) {
                         turnCredentialsRef.current = turnResponse.data;
                         logger.info(`TURN credentials obtained, TTL: ${turnResponse.data.ttl}s`);
-                    } else if (turnResponse.response.status === 503) {
+                    } else if (turnResponse.response?.status === 503) {
                         // TURN not configured on server - this is OK, we'll use STUN only
                         logger.info('TURN server not configured, using STUN only');
                     } else {
-                        logger.warn(`Failed to fetch TURN credentials: ${turnResponse.response.status}`);
+                        logger.warn(`Failed to fetch TURN credentials: ${turnResponse.response?.status}`);
                     }
                 } catch (e) {
                     logger.warn('Failed to fetch TURN credentials, continuing without TURN:', e);

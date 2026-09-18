@@ -1,5 +1,7 @@
-import { cn } from "@/lib/utils";
 import Image from "next/image";
+
+import { cn } from "@/lib/utils";
+
 import sativoiceLogo from "../../public/sativoice-logo.svg";
 
 // Reusable Sativoice wordmark. Theme-aware by default: SVG adapts to currentColor.
