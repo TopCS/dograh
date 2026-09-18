@@ -248,10 +248,14 @@ async def test_text_chat_session_creation_executes_initial_assistant_turn(
     workflow_run = await db_session.get_workflow_run_by_id(created["workflow_run_id"])
     assert workflow_run is not None
     assert workflow_run.definition_id == draft.id
-    assert workflow_run.initial_context == {
-        "name": "explicit",
-        "draft_only": "kept",
-    }
+    # The run persists the caller-supplied context merged with the draft's
+    # template-context variables; the session runner additionally stamps the
+    # resolved LLM config for post-call analytics.
+    run_context = workflow_run.initial_context or {}
+    assert run_context["name"] == "explicit"
+    assert run_context["draft_only"] == "kept"
+    assert run_context["runtime_configuration"]["llm_model"] == "gpt-4.1"
+    assert run_context["runtime_configuration"]["llm_provider"] == "openai"
     assert "call_duration_seconds" in workflow_run.usage_info
     assert _log_texts(run_payload["logs"], "rtf-bot-text") == [
         "Hello from the workflow tester."
