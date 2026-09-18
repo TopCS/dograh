@@ -836,7 +836,10 @@ async def publish_workflow(
 
     # Sync LiveKit dispatch rule in background (best-effort)
     import asyncio
-    asyncio.create_task(_sync_livekit_after_publish(workflow_id, user.selected_organization_id))
+
+    asyncio.create_task(
+        _sync_livekit_after_publish(workflow_id, user.selected_organization_id)
+    )
 
     return {
         "id": published.id,
@@ -852,14 +855,16 @@ async def publish_workflow(
 async def _sync_livekit_after_publish(workflow_id: int, org_id: int):
     """Background task — create/update LiveKit SIP dispatch rule."""
     try:
-        from api.services.livekit_bridge.sync import sync_workflow_dispatch_rule
         from api.db import db_client
+        from api.services.livekit_bridge.sync import sync_workflow_dispatch_rule
 
         mapping = await sync_workflow_dispatch_rule(workflow_id, org_id)
         if mapping:
             configs = await db_client.get_workflow_configurations(workflow_id) or {}
             configs["livekit"] = mapping
-            await db_client.update_workflow(workflow_id, workflow_configurations=configs)
+            await db_client.update_workflow(
+                workflow_id, workflow_configurations=configs
+            )
     except Exception:
         pass  # Non-blocking — dispatch rule sync is best-effort
 

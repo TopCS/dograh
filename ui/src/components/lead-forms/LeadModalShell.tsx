@@ -11,8 +11,8 @@
 // primary action and the focused-field underline (see .lead-form-* in
 // globals.css).
 
-import { useTranslations } from "next-intl";
 import type { LucideIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";

@@ -9,7 +9,6 @@ import {
     Info,
     RefreshCw,
 } from "lucide-react";
-import { Link } from "@/i18n/routing";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -31,6 +30,7 @@ import {
     TableRow,
 } from "@/components/ui/table";
 import { useAppConfig } from "@/context/AppConfigContext";
+import { Link } from "@/i18n/routing";
 import { useAuth } from "@/lib/auth";
 
 const LEDGER_PAGE_SIZE = 50;

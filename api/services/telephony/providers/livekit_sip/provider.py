@@ -47,6 +47,7 @@ class LiveKitSipProvider(TelephonyProvider):
     ) -> CallInitiationResult:
         """Initiate outbound SIP call via LiveKit."""
         import os
+
         from livekit import api as lk_api
 
         lk_url = os.getenv("LIVEKIT_URL", "").replace("ws://", "http://")
@@ -65,14 +66,16 @@ class LiveKitSipProvider(TelephonyProvider):
             room_name = f"dograh-call-{workflow_run_id}"
             agent_name = os.getenv("DOGRAH_LIVEKIT_AGENT", "dograh-agent")
 
-            metadata = json.dumps({
-                "workflow_id": str(kwargs.get("workflow_id", "")),
-                "org_id": str(kwargs.get("organization_id", "")),
-                "channel": "voice_sip",
-                "sender_phone": to_number,
-                "campaign_id": str(kwargs.get("campaign_id", "")),
-                "lead_id": str(kwargs.get("lead_id", "")),
-            })
+            metadata = json.dumps(
+                {
+                    "workflow_id": str(kwargs.get("workflow_id", "")),
+                    "org_id": str(kwargs.get("organization_id", "")),
+                    "channel": "voice_sip",
+                    "sender_phone": to_number,
+                    "campaign_id": str(kwargs.get("campaign_id", "")),
+                    "lead_id": str(kwargs.get("lead_id", "")),
+                }
+            )
 
             # STEP 1 (OSS-critical): create the room WITH the agent dispatch.
             # LiveKit OSS has no auto agent_dispatch on create_sip_participant —
@@ -85,7 +88,11 @@ class LiveKitSipProvider(TelephonyProvider):
                     metadata=metadata,
                 )
             )
-            logger.info("LiveKit room created with agent dispatch: room={} agent={}", room_name, agent_name)
+            logger.info(
+                "LiveKit room created with agent dispatch: room={} agent={}",
+                room_name,
+                agent_name,
+            )
 
             # STEP 2: originate the outbound SIP leg into that room.
             participant = await lkapi.sip.create_sip_participant(
@@ -102,7 +109,9 @@ class LiveKitSipProvider(TelephonyProvider):
             call_id = participant.participant_id or f"lk_{workflow_run_id}"
             logger.info(
                 "LiveKit SIP outbound call: room={} call_id={} to={}",
-                room_name, call_id, to_number,
+                room_name,
+                call_id,
+                to_number,
             )
 
             return CallInitiationResult(

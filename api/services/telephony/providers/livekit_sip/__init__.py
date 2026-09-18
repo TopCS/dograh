@@ -5,7 +5,12 @@ from api.services.telephony.providers.livekit_sip.config import (
     LiveKitSipConfigurationResponse,
 )
 from api.services.telephony.providers.livekit_sip.provider import LiveKitSipProvider
-from api.services.telephony.registry import ProviderSpec, ProviderUIField, ProviderUIMetadata, register
+from api.services.telephony.registry import (
+    ProviderSpec,
+    ProviderUIField,
+    ProviderUIMetadata,
+    register,
+)
 
 
 async def _noop_transport(**kwargs):

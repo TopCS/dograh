@@ -10,7 +10,6 @@ from typing import Optional
 
 from loguru import logger
 
-
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "")
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
@@ -22,8 +21,9 @@ def _is_configured() -> bool:
 
 async def _lk_api(method: str, path: str, body: dict | None = None) -> dict:
     """Call LiveKit Admin API. Returns parsed JSON response."""
-    import httpx
     import base64
+
+    import httpx
 
     auth = base64.b64encode(f"{LIVEKIT_API_KEY}:{LIVEKIT_API_SECRET}".encode()).decode()
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -82,11 +82,13 @@ async def sync_workflow_dispatch_rule(
                         "room_prefix": f"dograh-call-{workflow_id}-",
                     }
                 },
-                "metadata": json.dumps({
-                    "workflow_id": workflow_id,
-                    "org_id": org_id,
-                    "channel": "voice_sip",
-                }),
+                "metadata": json.dumps(
+                    {
+                        "workflow_id": workflow_id,
+                        "org_id": org_id,
+                        "channel": "voice_sip",
+                    }
+                ),
                 "room_config": {
                     "agents": [{"agent_name": "dograh-agent"}],
                 },
@@ -95,10 +97,15 @@ async def sync_workflow_dispatch_rule(
         mapping["dispatch_rule_id"] = resp.get("sip_dispatch_rule_id", "")
         logger.info(
             "LiveKit dispatch rule synced for workflow {}: {}",
-            workflow_id, mapping["dispatch_rule_id"],
+            workflow_id,
+            mapping["dispatch_rule_id"],
         )
     except Exception as exc:
-        logger.warning("Failed to create LiveKit dispatch rule for workflow {}: {}", workflow_id, exc)
+        logger.warning(
+            "Failed to create LiveKit dispatch rule for workflow {}: {}",
+            workflow_id,
+            exc,
+        )
 
     return mapping
 
@@ -143,6 +150,7 @@ async def sync_all_published_workflows(db_client) -> int:
 
     async with db_client.session() as session:
         from sqlalchemy import select
+
         result = await session.execute(
             select(WorkflowModel).where(
                 WorkflowModel.status == "active",

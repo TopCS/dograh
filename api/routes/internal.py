@@ -97,6 +97,7 @@ async def get_runtime_config(
         from api.services.configuration.ai_model_configuration import (
             get_effective_ai_model_configuration_for_workflow,
         )
+
         effective = await get_effective_ai_model_configuration_for_workflow(
             organization_id=workflow.organization_id,
             workflow_configurations=configs,
@@ -112,6 +113,7 @@ async def get_runtime_config(
 
     def _cfg(model_obj):
         from pydantic import BaseModel
+
         if model_obj is None:
             return {}
         if isinstance(model_obj, dict):
@@ -141,7 +143,9 @@ async def get_runtime_config(
         tool_uuids = node_data.get("tool_uuids") or []
         for uuid in tool_uuids:
             try:
-                tool_def = await db_client.get_tool_definition(uuid, workflow.organization_id)
+                tool_def = await db_client.get_tool_definition(
+                    uuid, workflow.organization_id
+                )
                 if tool_def:
                     tools.append(tool_def)
             except Exception:
@@ -227,9 +231,15 @@ async def create_session(
             },
         )
     except Exception:
-        return {"id": f"session_{body.workflow_id}_{body.room_name}", "status": "active"}
+        return {
+            "id": f"session_{body.workflow_id}_{body.room_name}",
+            "status": "active",
+        }
 
-    return {"id": str(session.id) if hasattr(session, "id") else "unknown", "status": "active"}
+    return {
+        "id": str(session.id) if hasattr(session, "id") else "unknown",
+        "status": "active",
+    }
 
 
 @router.put("/sessions/{session_id}")
@@ -241,6 +251,7 @@ async def update_session(
     """Update a session record."""
     try:
         from api.db import db_client
+
         await db_client.update_workflow_run(
             run_id=int(session_id),
             gathered_context=body.get("context", {}),
@@ -260,6 +271,7 @@ async def hangup_session(
     """Handle session hangup notification."""
     try:
         from api.db import db_client
+
         await db_client.update_workflow_run(
             run_id=int(body.session_id) if body.session_id.isdigit() else None,
             is_completed=True,
@@ -331,8 +343,8 @@ async def vicidial_update_lead(
 
 async def _get_vicidial_adapter(org_id: str):
     """Build a VicidialAdapter from the org's ARI telephony config."""
-    from api.services.telephony.providers.ari.external_pbx import create_adapter
     from api.db import db_client
+    from api.services.telephony.providers.ari.external_pbx import create_adapter
 
     try:
         configs = await db_client.get_telephony_configs_for_org(int(org_id))

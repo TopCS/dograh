@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   ChevronRight,
   Copy,
-  ExternalLink,
   Pencil,
   Plus,
   Star,

@@ -24,7 +24,6 @@ import {
   Wrench,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { Link, usePathname, useRouter } from "@/i18n/routing";
 import React, { useRef } from "react";
 
 import { BrandLogo } from "@/components/BrandLogo";
@@ -54,12 +53,13 @@ import {
 } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAppConfig } from "@/context/AppConfigContext";
-import { HIDE_EXTERNAL_LINKS } from "@/lib/env";
 import { useLeadForms } from "@/context/LeadFormsContext";
 import { useTelephonyConfigWarnings } from "@/context/TelephonyConfigWarningsContext";
 import { useLatestReleaseVersion } from "@/hooks/useLatestReleaseVersion";
+import { Link, usePathname, useRouter } from "@/i18n/routing";
 import type { LocalUser } from "@/lib/auth";
 import { useAuth } from "@/lib/auth";
+import { HIDE_EXTERNAL_LINKS } from "@/lib/env";
 import { cn } from "@/lib/utils";
 
 type SidebarNavItem = {

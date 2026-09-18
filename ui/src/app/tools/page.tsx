@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, Plus, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Plus, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
@@ -55,7 +55,6 @@ import {
 
 export default function ToolsPage() {
     const t = useTranslations("tools");
-    const common = useTranslations("common");
     const { user, getAccessToken, redirectToLogin, loading } = useAuth();
     const router = useRouter();
 
