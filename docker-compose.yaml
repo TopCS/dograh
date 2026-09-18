@@ -1,8 +1,8 @@
-# Sativoice deployment stack — driven by the helper scripts, not by a bare
+# Dograh deployment stack — driven by the helper scripts, not by a bare
 # `docker compose up`.
 #
 # This stack needs a generated .env (secrets, public host/URL) and, for the
-# remote/TURN profiles, runtime nginx/coturn config rendered by the sativoice-init
+# remote/TURN profiles, runtime nginx/coturn config rendered by the dograh-init
 # service. The setup scripts create those for you — start with them:
 #
 #   Local:          ./start_docker.sh        (Windows: .\start_docker.ps1)
@@ -10,7 +10,7 @@
 #
 # Running `docker compose up` against a fresh checkout will fail or come up
 # misconfigured (e.g. OSS_JWT_SECRET is required). Full guide:
-# https://docs.sativoice.com/deployment/docker
+# https://docs.dograh.com/deployment/docker
 
 services:
   postgres:
@@ -203,7 +203,7 @@ services:
       MINIO_SECURE: "false"
 
       # Number of uvicorn worker processes (each is its own process bound to a
-      # distinct port starting at 8000). sativoice-init renders nginx upstreams
+      # distinct port starting at 8000). dograh-init renders nginx upstreams
       # from this value and nginx load-balances across them with least_conn.
       FASTAPI_WORKERS: "${FASTAPI_WORKERS:-1}"
 
@@ -233,6 +233,11 @@ services:
 
       OSS_JWT_SECRET: "${OSS_JWT_SECRET:?OSS_JWT_SECRET must be set to a strong secret}"
 
+      # Shared secret for the internal router (/api/internal/*). The
+      # dograh-livekit bridge authenticates with this via the X-Internal-Token
+      # header, so it must match the bridge's DOGRAH_INTERNAL_TOKEN.
+      DOGRAH_INTERNAL_TOKEN: "${DOGRAH_INTERNAL_TOKEN:-}"
+
       # Telemetry
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
       POSTHOG_API_KEY: "phc_ItizB1dP6yv7ZYobbcqrpxTdbomDA8hJFSEmAMdYvIr"
@@ -257,6 +262,42 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    networks:
+      - app-network
+
+  # LiveKit agent bridge. Runs the dograh-livekit agent workers that serve
+  # inbound LiveKit SIP/Room calls through the Dograh internal API (session
+  # creation, dispatch sync, KB search). Opt-in: only starts with the "livekit"
+  # compose profile and needs LIVEKIT_URL/API keys in .env to do anything;
+  # without credentials the worker starts but stays idle (see api/.env.example).
+  dograh-livekit:
+    build:
+      context: ./dograh-livekit
+      dockerfile: Dockerfile
+    container_name: dograh-livekit
+    profiles: ["livekit"]
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # LiveKit Cloud / self-hosted server credentials
+      LIVEKIT_URL: "${LIVEKIT_URL:-}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:-}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:-}"
+      # Dograh internal API. The bridge reaches session/dispatch endpoints via
+      # the internal router, so DOGRAH_INTERNAL_TOKEN must match the api
+      # service's value.
+      DOGRAH_API_URL: "${DOGRAH_API_URL:-http://api:8000}"
+      DOGRAH_INTERNAL_TOKEN: "${DOGRAH_INTERNAL_TOKEN:-}"
+      # AI provider credentials used by the agent workers (LLM/TTS/STT)
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_APPLICATION_CREDENTIALS:-}"
+      GOOGLE_CLOUD_PROJECT: "${GOOGLE_CLOUD_PROJECT:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      DEEPGRAM_API_KEY: "${DEEPGRAM_API_KEY:-}"
+      CARTESIA_API_KEY: "${CARTESIA_API_KEY:-}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
     networks:
       - app-network
 

@@ -47,6 +47,15 @@ The devcontainer also runs headless via the [Dev Container CLI](/contribution/re
 </Accordion>
 </AccordionGroup>
 
+### Continuous Integration
+
+Pull requests are automatically tested by GitHub Actions:
+
+- **API tests** (`.github/workflows/api-tests.yml`) run the backend pytest suite when `api/**`, `pipecat/**`, or `scripts/**` change.
+- **LiveKit bridge tests** (`.github/workflows/livekit-bridge-tests.yml`) run the `dograh-livekit` pytest suite (`client`, `flow`, `models`, `stages`, `tools`, `translator`) when `dograh-livekit/**` changes. The bridge tests use HTTP mocks (`respx`) and stub credentials — they never require a live LiveKit server, nor Google/OpenAI/Deepgram/Cartesia API keys.
+
+Changes under `dograh-livekit/` trigger only the LiveKit bridge workflow — the API tests workflow's paths filter covers `api/**`, `pipecat/**`, and `scripts/**`, not the bridge — so the bridge job is the sole gate for bridge changes.
+
 ## Daily workflow
 
 | What | How |
@@ -88,6 +97,7 @@ All configurations load `api/.env` (test configs use `api/.env.test`) and set `j
 | `pipecat/` | Git submodule for the voice pipeline (STT → LLM → TTS) |
 | `docs/` | This documentation site, written in MDX, previewed with `mint dev` |
 | `sdk/` | Python/TypeScript SDKs for driving Dograh programmatically |
+| `dograh-livekit/` | LiveKit agent bridge (OSS path) — self-contained, opt-in via the `livekit` compose profile |
 | `scripts/` | Setup, deployment, and update scripts |
 | `deploy/` | nginx and coturn config templates used by remote deployment |
 
