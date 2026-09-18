@@ -1,12 +1,11 @@
 "use client";
 
-import { Link } from '@/i18n/routing';
-
 import { useTranslations } from 'next-intl';
 
 import { GitHubStarBadge } from '@/components/layout/GitHubStarBadge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Link } from '@/i18n/routing';
 import { useAuth } from '@/lib/auth';
 import { HIDE_EXTERNAL_LINKS } from '@/lib/env';
 

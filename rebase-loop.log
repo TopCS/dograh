@@ -1,0 +1,88 @@
+AUTO-OURS round 1: ui/package-lock.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply a54ab51... chore: refactor file upload mechanism to avoid NFS dependency (#496)
+MANUAL-CONFLICT round 2: docker-compose.yaml
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply a9947ce... chore: delete private deployment file
+MANUAL-CONFLICT round 2: PRIVATE_DEPLOYMENT_PLAN.md
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply fdb7f92... chore: cleaup mps v1 billing (#507)
+MANUAL-CONFLICT round 2: ui/src/app/billing/page.tsx
+AUTO-OURS round 1: docs/api-reference/openapi.json
+ui/package-lock.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply a2240db... feat(tts): add xAI as a Voice (TTS) provider (#476)
+AUTO-OURS round 2: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 041c31a... fix: increase concurrency limit an handle it across all call paths (#508)
+AUTO-OURS round 3: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply fb4038a... fix: fix org scoped access for resources (#517)
+AUTO-OURS round 4: ui/package-lock.json
+MANUAL-CONFLICT round 4: ui/src/components/layout/AppSidebar.tsx
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply e405457... fix: fix superadmin impersonation
+AUTO-OURS round 2: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply e7494e9... feat(auth): gate OSS signup behind ENABLE_SIGNUP flag (#514)
+MANUAL-CONFLICT round 3: ui/src/app/auth/login/page.tsx
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply cfe1d37... feat: add ElevenLabs realtime STT provider support (#512) (#522)
+AUTO-OURS round 2: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 0ea3e34... fix: regenerate ui package-lock, restore missing @emnapi entries
+AUTO-OURS round 3: ui/package-lock.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply f1bc191... fix: regenerate ui package-lock with npm 10 for npm ci compat across npm versions
+AUTO-OURS round 4: ui/package-lock.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply eeb027d... docs: replace star history api with image
+MANUAL-CONFLICT round 5: README.md
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 01acf6a... fix: fix speech to speech model transitions (#545)
+AUTO-OURS round 2: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply a422241... chore: add docs url for integration nodes
+AUTO-OURS round 3: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 23956ac... docs: update README.md
+MANUAL-CONFLICT round 4: README.md
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply f4c5954... feat: add tool test panel for HTTP API tools (#547)
+AUTO-OURS round 2: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 9471041... fix(api): validate pagination bounds on run-list endpoints (#553) (#554)
+AUTO-OURS round 3: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply d8cd34e... feat: add vici dial controls from UI (#563)
+AUTO-OURS round 4: docs/api-reference/openapi.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 94dce42... feat(tts): add websocket transport option for xAI TTS (#548)
+AUTO-OURS round 5: ui/package-lock.json
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply caf5bb1... chore: gitignore local tooling artifacts (.codegraph, .rpiv)
+MANUAL-CONFLICT round 6: .gitignore
+ Author: andreab <andrea.batazzi@topcs.it>
+ 1 file changed, 4 insertions(+)
+Rebasing (99/99)Successfully rebased and updated refs/heads/feat-dogr-001-rebased.
+REBASE-COMPLETE
