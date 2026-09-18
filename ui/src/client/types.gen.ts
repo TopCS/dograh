@@ -97,6 +97,10 @@ export type AriConfigurationRequest = {
      */
     ws_client_name?: string;
     /**
+     * Optional external PBX connected through this Asterisk instance
+     */
+    external_pbx?: VicidialExternalPbxConfiguration | null;
+    /**
      * From Numbers
      *
      * List of SIP extensions/numbers for outbound calls (optional)
@@ -130,6 +134,7 @@ export type AriConfigurationResponse = {
      * Ws Client Name
      */
     ws_client_name?: string;
+    external_pbx?: VicidialExternalPbxConfiguration | null;
     /**
      * From Numbers
      */
@@ -184,6 +189,21 @@ export type ActiveCallsResponse = {
      * Active Calls
      */
     active_calls: number;
+};
+
+/**
+ * AmbientNoiseConfigurationDefaults
+ */
+export type AmbientNoiseConfigurationDefaults = {
+    /**
+     * Enabled
+     */
+    enabled?: boolean;
+    /**
+     * Volume
+     */
+    volume?: number;
+    [key: string]: unknown;
 };
 
 /**
@@ -386,7 +406,7 @@ export type AzureRealtimeLlmConfiguration = {
     /**
      * Api Version
      *
-     * Azure OpenAI API version.
+     * Azure OpenAI Realtime protocol version. Use 'v1' for the GA API; date-based versions select the deprecated preview endpoint.
      */
     api_version?: string;
 };
@@ -546,7 +566,9 @@ export type ByokPipelineAiModelConfiguration = {
         provider: 'azure_speech';
     } & AzureSpeechTtsConfiguration) | ({
         provider: 'smallest';
-    } & SmallestAittsConfiguration);
+    } & SmallestAittsConfiguration) | ({
+        provider: 'xai';
+    } & XaittsConfiguration);
     /**
      * Stt
      */
@@ -576,7 +598,9 @@ export type ByokPipelineAiModelConfiguration = {
         provider: 'azure_speech';
     } & AzureSpeechSttConfiguration) | ({
         provider: 'smallest';
-    } & SmallestAisttConfiguration);
+    } & SmallestAisttConfiguration) | ({
+        provider: 'elevenlabs';
+    } & ElevenlabsSttConfiguration);
     /**
      * Embeddings
      */
@@ -1311,6 +1335,46 @@ export type CloudonixConfigurationResponse = {
 };
 
 /**
+ * ContextDestinationMappingConfig
+ *
+ * Resolve an external-PBX destination from gathered context.
+ */
+export type ContextDestinationMappingConfig = {
+    /**
+     * Context Path
+     *
+     * Gathered-context path or extracted-variable name used for routing.
+     */
+    context_path: string;
+    /**
+     * Routes
+     */
+    routes: Array<ContextDestinationRoute>;
+    /**
+     * Fallback Destination
+     *
+     * Optional provider-native fallback destination.
+     */
+    fallback_destination?: string | null;
+};
+
+/**
+ * ContextDestinationRoute
+ *
+ * Map one gathered-context value to an external-PBX destination.
+ */
+export type ContextDestinationRoute = {
+    /**
+     * Context Value
+     */
+    context_value: string;
+    /**
+     * Destination
+     */
+    destination: string;
+};
+
+/**
  * CreateAPIKeyRequest
  */
 export type CreateApiKeyRequest = {
@@ -1878,6 +1942,7 @@ export type DefaultConfigurationsResponse = {
     default_providers: {
         [key: string]: string;
     };
+    workflow_configurations: WorkflowConfigurationDefaults;
 };
 
 /**
@@ -2209,6 +2274,38 @@ export type DuplicateTemplateRequest = {
 /**
  * ElevenLabs
  */
+export type ElevenlabsSttConfiguration = {
+    /**
+     * Provider
+     */
+    provider?: 'elevenlabs';
+    /**
+     * Api Key
+     */
+    api_key: string | Array<string>;
+    /**
+     * Model
+     *
+     * ElevenLabs realtime STT model.
+     */
+    model?: string;
+    /**
+     * Language
+     *
+     * ISO 639-1 language code for transcription. Use 'auto' to let ElevenLabs detect the language.
+     */
+    language?: string;
+    /**
+     * Base Url
+     *
+     * ElevenLabs API base URL. Override to use a Data Residency endpoint (e.g. https://api.eu.residency.elevenlabs.io) for GDPR / HIPAA / regional compliance.
+     */
+    base_url?: string;
+};
+
+/**
+ * ElevenLabs
+ */
 export type ElevenlabsTtsConfiguration = {
     /**
      * Provider
@@ -2418,6 +2515,22 @@ export type EndCallToolDefinition = {
      * End Call configuration.
      */
     config: EndCallConfig;
+};
+
+/**
+ * ExternalPBXFieldMapping
+ *
+ * Map one gathered-context value to a provider-native field.
+ */
+export type ExternalPbxFieldMapping = {
+    /**
+     * Context Path
+     */
+    context_path: string;
+    /**
+     * Destination Field
+     */
+    destination_field: string;
 };
 
 /**
@@ -2867,6 +2980,10 @@ export type HealthResponse = {
      */
     force_turn_relay: boolean;
     /**
+     * Signup Enabled
+     */
+    signup_enabled: boolean;
+    /**
      * Stack Project Id
      */
     stack_project_id?: string | null;
@@ -2971,6 +3088,64 @@ export type HttpApiToolDefinition = {
 };
 
 /**
+ * HttpTransferResolverConfig
+ *
+ * HTTP endpoint used to resolve transfer destination at call time.
+ */
+export type HttpTransferResolverConfig = {
+    /**
+     * Type
+     *
+     * Resolver type.
+     */
+    type?: 'http';
+    /**
+     * Url
+     *
+     * HTTP or HTTPS endpoint for transfer resolution.
+     */
+    url: string;
+    /**
+     * Headers
+     *
+     * Static headers to include with every resolver request.
+     */
+    headers?: {
+        [key: string]: string;
+    } | null;
+    /**
+     * Credential Uuid
+     *
+     * Reference to an external credential for resolver authentication.
+     */
+    credential_uuid?: string | null;
+    /**
+     * Timeout Ms
+     *
+     * Resolver request timeout in milliseconds.
+     */
+    timeout_ms?: number;
+    /**
+     * Wait Message
+     *
+     * Optional short message played while Dograh resolves routing.
+     */
+    wait_message?: string | null;
+    /**
+     * Parameters
+     *
+     * Parameters the model may provide when calling this transfer tool.
+     */
+    parameters?: Array<ToolParameter> | null;
+    /**
+     * Preset Parameters
+     *
+     * Parameters injected by Dograh from fixed values or workflow context templates.
+     */
+    preset_parameters?: Array<PresetToolParameter> | null;
+};
+
+/**
  * Hugging Face
  *
  * Hosted Hugging Face Inference Providers API for usage-based inference.
@@ -3049,8 +3224,9 @@ export type HuggingFaceSttConfiguration = {
  *
  * Request payload for superadmin impersonation.
  *
- * Either ``provider_user_id`` **or** ``user_id`` must be supplied. If both are
- * provided, ``provider_user_id`` takes precedence.
+ * ``provider_user_id``, ``user_id``, or ``email`` may be supplied. If more
+ * than one is provided, ``provider_user_id`` takes precedence, followed by
+ * ``user_id`` and then ``email``.
  */
 export type ImpersonateRequest = {
     /**
@@ -3061,6 +3237,10 @@ export type ImpersonateRequest = {
      * User Id
      */
     user_id?: number | null;
+    /**
+     * Email
+     */
+    email?: string | null;
 };
 
 /**
@@ -3292,10 +3472,6 @@ export type MpsBillingAccountResponse = {
  */
 export type MpsBillingCreditsResponse = {
     /**
-     * Billing Version
-     */
-    billing_version: 'legacy' | 'v2';
-    /**
      * Total Credits Used
      */
     total_credits_used?: number;
@@ -3418,24 +3594,6 @@ export type MpsCreditPurchaseUrlResponse = {
      * Checkout Url
      */
     checkout_url: string;
-};
-
-/**
- * MPSCreditsResponse
- */
-export type MpsCreditsResponse = {
-    /**
-     * Total Credits Used
-     */
-    total_credits_used: number;
-    /**
-     * Remaining Credits
-     */
-    remaining_credits: number;
-    /**
-     * Total Quota
-     */
-    total_quota: number;
 };
 
 /**
@@ -3611,6 +3769,46 @@ export type MiniMaxTtsConfiguration = {
 };
 
 /**
+ * ModelConfigurationMetricPrice
+ */
+export type ModelConfigurationMetricPrice = {
+    /**
+     * Metric Code
+     */
+    metric_code: string;
+    /**
+     * Display Name
+     */
+    display_name: string;
+    /**
+     * Unit
+     */
+    unit: string;
+    /**
+     * Price Per Minute
+     */
+    price_per_minute: number;
+    /**
+     * Currency
+     */
+    currency: string;
+    /**
+     * Rounding Policy
+     */
+    rounding_policy: string;
+};
+
+/**
+ * ModelConfigurationPricingResponse
+ *
+ * MPS-owned effective prices relevant to model configuration choices.
+ */
+export type ModelConfigurationPricingResponse = {
+    platform_usage?: ModelConfigurationMetricPrice | null;
+    dograh_model?: ModelConfigurationMetricPrice | null;
+};
+
+/**
  * MoveWorkflowToFolderRequest
  *
  * Move a workflow into a folder, or to "Uncategorized" when null.
@@ -3677,6 +3875,12 @@ export type NodeSpec = {
      * LLM-only guidance; omitted from the UI.
      */
     llm_hint?: string | null;
+    /**
+     * Docs Url
+     *
+     * Documentation URL shown in the node editor.
+     */
+    docs_url?: string | null;
     category: NodeCategory;
     /**
      * Icon
@@ -3850,6 +4054,12 @@ export type OpenAiRealtimeLlmConfiguration = {
      * Voice the model speaks in.
      */
     voice?: string;
+    /**
+     * Language
+     *
+     * ISO 639-1 language code for input audio transcription (e.g. 'pt', 'es'). Improves transcription accuracy and latency. Leave unset to auto-detect.
+     */
+    language?: string | null;
 };
 
 /**
@@ -4049,6 +4259,10 @@ export type OrganizationPreferences = {
      * Timezone
      */
     timezone?: string | null;
+    /**
+     * External Pbx Integrations Enabled
+     */
+    external_pbx_integrations_enabled?: boolean;
 };
 
 /**
@@ -5561,6 +5775,20 @@ export type TelephonyProviderMetadata = {
 };
 
 /**
+ * TelephonyProviderUICondition
+ */
+export type TelephonyProviderUiCondition = {
+    /**
+     * Field
+     */
+    field: string;
+    /**
+     * Equals
+     */
+    equals: unknown;
+};
+
+/**
  * TelephonyProviderUIField
  *
  * One form field on a telephony provider's configuration UI.
@@ -5594,6 +5822,29 @@ export type TelephonyProviderUiField = {
      * Placeholder
      */
     placeholder?: string | null;
+    /**
+     * Options
+     */
+    options?: Array<TelephonyProviderUiOption> | null;
+    visible_when?: TelephonyProviderUiCondition | null;
+    /**
+     * Section
+     */
+    section?: string | null;
+};
+
+/**
+ * TelephonyProviderUIOption
+ */
+export type TelephonyProviderUiOption = {
+    /**
+     * Value
+     */
+    value: string;
+    /**
+     * Label
+     */
+    label: string;
 };
 
 /**
@@ -5796,17 +6047,105 @@ export type ToolResponse = {
 };
 
 /**
+ * ToolTestRequest
+ *
+ * Request body for testing an HTTP API tool outside a live call.
+ */
+export type ToolTestRequest = {
+    /**
+     * Llm Params
+     *
+     * Values for parameters normally supplied by the model.
+     */
+    llm_params?: {
+        [key: string]: unknown;
+    };
+    /**
+     * Preset Params
+     *
+     * Resolved values for parameters normally supplied from presets.
+     */
+    preset_params?: {
+        [key: string]: unknown;
+    };
+};
+
+/**
+ * ToolTestResponse
+ *
+ * Result of testing an HTTP API tool.
+ */
+export type ToolTestResponse = {
+    /**
+     * Status
+     */
+    status: string;
+    /**
+     * Status Code
+     */
+    status_code?: number | null;
+    /**
+     * Data
+     */
+    data?: unknown | null;
+    /**
+     * Error
+     */
+    error?: string | null;
+    /**
+     * Hint
+     */
+    hint?: string | null;
+    /**
+     * Request Method
+     */
+    request_method: string;
+    /**
+     * Request Url
+     */
+    request_url: string;
+    /**
+     * Request Headers
+     */
+    request_headers?: {
+        [key: string]: string;
+    };
+    /**
+     * Request Body
+     */
+    request_body?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Request Params
+     */
+    request_params?: {
+        [key: string]: unknown;
+    } | null;
+    /**
+     * Duration Ms
+     */
+    duration_ms: number;
+};
+
+/**
  * TransferCallConfig
  *
  * Configuration for Transfer Call tools.
  */
 export type TransferCallConfig = {
     /**
+     * Destination Source
+     *
+     * Whether the destination is static/template, resolved by HTTP, or mapped from gathered context to an external-PBX destination.
+     */
+    destination_source?: 'static' | 'dynamic' | 'context_mapping';
+    /**
      * Destination
      *
-     * Phone number or SIP endpoint to transfer the call to, e.g. +1234567890 or PJSIP/1234.
+     * Phone number, SIP endpoint, or template to transfer the call to, e.g. +1234567890, PJSIP/1234, or {{initial_context.transfer_destination}}.
      */
-    destination: string;
+    destination?: string;
     /**
      * Messagetype
      *
@@ -5831,6 +6170,20 @@ export type TransferCallConfig = {
      * Maximum seconds to wait for the destination to answer.
      */
     timeout?: number;
+    /**
+     * Parameters
+     *
+     * Parameters the model may provide when calling this transfer tool, for example state, department, or transfer reason.
+     */
+    parameters?: Array<ToolParameter> | null;
+    /**
+     * Optional resolver that determines transfer routing at call time.
+     */
+    resolver?: HttpTransferResolverConfig | null;
+    /**
+     * Optional gathered-context to external-PBX destination mapping.
+     */
+    context_mapping?: ContextDestinationMappingConfig | null;
 };
 
 /**
@@ -6125,12 +6478,7 @@ export type UpdateWorkflowRequest = {
     template_context_variables?: {
         [key: string]: unknown;
     } | null;
-    /**
-     * Workflow Configurations
-     */
-    workflow_configurations?: {
-        [key: string]: unknown;
-    } | null;
+    workflow_configurations?: WorkflowConfigurationDefaults | null;
 };
 
 /**
@@ -6297,6 +6645,88 @@ export type ValidationError = {
     ctx?: {
         [key: string]: unknown;
     };
+};
+
+/**
+ * VicidialAgentAPIConfiguration
+ *
+ * VICIdial remote-agent call-control API configuration.
+ */
+export type VicidialAgentApiConfiguration = {
+    /**
+     * Url
+     *
+     * Full URL to agc/api.php
+     */
+    url: string;
+    /**
+     * Username
+     *
+     * VICIdial agent API user
+     */
+    username: string;
+    /**
+     * Password
+     *
+     * VICIdial agent API password
+     */
+    password: string;
+    /**
+     * Source
+     *
+     * VICIdial API source tag
+     */
+    source?: string;
+};
+
+/**
+ * VicidialExternalPBXConfiguration
+ *
+ * External-PBX configuration used by the VICIdial strategy adapter.
+ */
+export type VicidialExternalPbxConfiguration = {
+    /**
+     * Type
+     */
+    type?: 'vicidial';
+    agent_api: VicidialAgentApiConfiguration;
+    non_agent_api?: VicidialNonAgentApiConfiguration | null;
+    /**
+     * Timeout Seconds
+     */
+    timeout_seconds?: number;
+};
+
+/**
+ * VicidialNonAgentAPIConfiguration
+ *
+ * Optional VICIdial non-agent API configuration for lead updates.
+ */
+export type VicidialNonAgentApiConfiguration = {
+    /**
+     * Url
+     *
+     * Full non_agent_api.php URL
+     */
+    url?: string | null;
+    /**
+     * Username
+     *
+     * Non-agent API user
+     */
+    username?: string | null;
+    /**
+     * Password
+     *
+     * Non-agent API password
+     */
+    password?: string | null;
+    /**
+     * Source
+     *
+     * Non-agent API source tag
+     */
+    source?: string;
 };
 
 /**
@@ -6522,6 +6952,54 @@ export type VonageConfigurationResponse = {
  * Webhook credential authentication types
  */
 export type WebhookCredentialType = 'none' | 'api_key' | 'bearer_token' | 'basic_auth' | 'custom_header';
+
+/**
+ * WorkflowConfigurationDefaults
+ */
+export type WorkflowConfigurationDefaults = {
+    ambient_noise_configuration?: AmbientNoiseConfigurationDefaults;
+    /**
+     * Max Call Duration
+     */
+    max_call_duration?: number;
+    /**
+     * Max User Idle Timeout
+     */
+    max_user_idle_timeout?: number;
+    /**
+     * Smart Turn Stop Secs
+     */
+    smart_turn_stop_secs?: number;
+    /**
+     * Turn Start Strategy
+     */
+    turn_start_strategy?: 'default' | 'min_words' | 'provisional_vad';
+    /**
+     * Turn Start Min Words
+     */
+    turn_start_min_words?: number;
+    /**
+     * Provisional Vad Pause Secs
+     */
+    provisional_vad_pause_secs?: number;
+    /**
+     * Turn Stop Strategy
+     */
+    turn_stop_strategy?: 'transcription' | 'turn_analyzer';
+    /**
+     * Dictionary
+     */
+    dictionary?: string;
+    /**
+     * Context Compaction Enabled
+     */
+    context_compaction_enabled?: boolean;
+    /**
+     * External Pbx Field Mappings
+     */
+    external_pbx_field_mappings?: Array<ExternalPbxFieldMapping>;
+    [key: string]: unknown;
+};
 
 /**
  * WorkflowCountResponse
@@ -7118,6 +7596,32 @@ export type WorkflowVersionResponse = {
     } | null;
 };
 
+/**
+ * xAI
+ */
+export type XaittsConfiguration = {
+    /**
+     * Provider
+     */
+    provider?: 'xai';
+    /**
+     * Api Key
+     */
+    api_key: string | Array<string>;
+    /**
+     * Voice
+     *
+     * xAI voice persona.
+     */
+    voice?: string;
+    /**
+     * Language
+     *
+     * BCP-47 language code for synthesis (e.g. 'en', 'fr', 'de'), or 'auto' for automatic language detection.
+     */
+    language?: string;
+};
+
 export type InitiateCallApiV1TelephonyInitiateCallPostData = {
     body: InitiateCallRequest;
     headers?: {
@@ -7255,6 +7759,38 @@ export type CompleteTransferFunctionCallApiV1TelephonyTransferResultTransferIdPo
 export type CompleteTransferFunctionCallApiV1TelephonyTransferResultTransferIdPostError = CompleteTransferFunctionCallApiV1TelephonyTransferResultTransferIdPostErrors[keyof CompleteTransferFunctionCallApiV1TelephonyTransferResultTransferIdPostErrors];
 
 export type CompleteTransferFunctionCallApiV1TelephonyTransferResultTransferIdPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: unknown;
+};
+
+export type HandleCloudonixTransferResultApiV1TelephonyCloudonixTransferResultTransferIdPostData = {
+    body?: never;
+    path: {
+        /**
+         * Transfer Id
+         */
+        transfer_id: string;
+    };
+    query?: never;
+    url: '/api/v1/telephony/cloudonix/transfer-result/{transfer_id}';
+};
+
+export type HandleCloudonixTransferResultApiV1TelephonyCloudonixTransferResultTransferIdPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type HandleCloudonixTransferResultApiV1TelephonyCloudonixTransferResultTransferIdPostError = HandleCloudonixTransferResultApiV1TelephonyCloudonixTransferResultTransferIdPostErrors[keyof HandleCloudonixTransferResultApiV1TelephonyCloudonixTransferResultTransferIdPostErrors];
+
+export type HandleCloudonixTransferResultApiV1TelephonyCloudonixTransferResultTransferIdPostResponses = {
     /**
      * Successful Response
      */
@@ -8371,10 +8907,14 @@ export type GetWorkflowRunsApiV1WorkflowWorkflowIdRunsGetData = {
     query?: {
         /**
          * Page
+         *
+         * Page number (starts from 1)
          */
         page?: number;
         /**
          * Limit
+         *
+         * Number of items per page
          */
         limit?: number;
         /**
@@ -9642,10 +10182,14 @@ export type GetCampaignRunsApiV1CampaignCampaignIdRunsGetData = {
     query?: {
         /**
          * Page
+         *
+         * Page number (starts from 1)
          */
         page?: number;
         /**
          * Limit
+         *
+         * Number of items per page
          */
         limit?: number;
         /**
@@ -10408,6 +10952,50 @@ export type RefreshMcpToolsApiV1ToolsToolUuidMcpRefreshPostResponses = {
 
 export type RefreshMcpToolsApiV1ToolsToolUuidMcpRefreshPostResponse = RefreshMcpToolsApiV1ToolsToolUuidMcpRefreshPostResponses[keyof RefreshMcpToolsApiV1ToolsToolUuidMcpRefreshPostResponses];
 
+export type TestToolApiV1ToolsToolUuidTestPostData = {
+    body: ToolTestRequest;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path: {
+        /**
+         * Tool Uuid
+         */
+        tool_uuid: string;
+    };
+    query?: never;
+    url: '/api/v1/tools/{tool_uuid}/test';
+};
+
+export type TestToolApiV1ToolsToolUuidTestPostErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type TestToolApiV1ToolsToolUuidTestPostError = TestToolApiV1ToolsToolUuidTestPostErrors[keyof TestToolApiV1ToolsToolUuidTestPostErrors];
+
+export type TestToolApiV1ToolsToolUuidTestPostResponses = {
+    /**
+     * Successful Response
+     */
+    200: ToolTestResponse;
+};
+
+export type TestToolApiV1ToolsToolUuidTestPostResponse = TestToolApiV1ToolsToolUuidTestPostResponses[keyof TestToolApiV1ToolsToolUuidTestPostResponses];
+
 export type UnarchiveToolApiV1ToolsToolUuidUnarchivePostData = {
     body?: never;
     headers?: {
@@ -10683,6 +11271,45 @@ export type SaveModelConfigurationV2ApiV1OrganizationsModelConfigurationsV2PutRe
 };
 
 export type SaveModelConfigurationV2ApiV1OrganizationsModelConfigurationsV2PutResponse = SaveModelConfigurationV2ApiV1OrganizationsModelConfigurationsV2PutResponses[keyof SaveModelConfigurationV2ApiV1OrganizationsModelConfigurationsV2PutResponses];
+
+export type GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetData = {
+    body?: never;
+    headers?: {
+        /**
+         * Authorization
+         */
+        authorization?: string | null;
+        /**
+         * X-Api-Key
+         */
+        'X-API-Key'?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/api/v1/organizations/model-configurations/v2/pricing';
+};
+
+export type GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetError = GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetErrors[keyof GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetErrors];
+
+export type GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetResponses = {
+    /**
+     * Successful Response
+     */
+    200: ModelConfigurationPricingResponse;
+};
+
+export type GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetResponse = GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetResponses[keyof GetModelConfigurationPricingApiV1OrganizationsModelConfigurationsV2PricingGetResponses];
 
 export type PreviewModelConfigurationV2MigrationApiV1OrganizationsModelConfigurationsV2MigrationPreviewGetData = {
     body?: never;
@@ -11970,45 +12597,6 @@ export type GetCurrentPeriodUsageApiV1OrganizationsUsageCurrentPeriodGetResponse
 };
 
 export type GetCurrentPeriodUsageApiV1OrganizationsUsageCurrentPeriodGetResponse = GetCurrentPeriodUsageApiV1OrganizationsUsageCurrentPeriodGetResponses[keyof GetCurrentPeriodUsageApiV1OrganizationsUsageCurrentPeriodGetResponses];
-
-export type GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetData = {
-    body?: never;
-    headers?: {
-        /**
-         * Authorization
-         */
-        authorization?: string | null;
-        /**
-         * X-Api-Key
-         */
-        'X-API-Key'?: string | null;
-    };
-    path?: never;
-    query?: never;
-    url: '/api/v1/organizations/usage/mps-credits';
-};
-
-export type GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetErrors = {
-    /**
-     * Not found
-     */
-    404: unknown;
-    /**
-     * Validation Error
-     */
-    422: HttpValidationError;
-};
-
-export type GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetError = GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetErrors[keyof GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetErrors];
-
-export type GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetResponses = {
-    /**
-     * Successful Response
-     */
-    200: MpsCreditsResponse;
-};
-
-export type GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetResponse = GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetResponses[keyof GetMpsCreditsApiV1OrganizationsUsageMpsCreditsGetResponses];
 
 export type GetBillingCreditsApiV1OrganizationsBillingCreditsGetData = {
     body?: never;

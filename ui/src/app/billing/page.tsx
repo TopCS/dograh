@@ -9,9 +9,8 @@ import {
     Info,
     RefreshCw,
 } from "lucide-react";
-import { Link } from "@/i18n/routing";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -114,11 +113,10 @@ const getPageFromSearchParams = (
 };
 
 export default function BillingPage() {
-    const t = useTranslations("billing");
     const router = useRouter();
     const searchParams = useSearchParams();
     const auth = useAuth();
-    const { config } = useAppConfig();
+    const { config, loading: configLoading } = useAppConfig();
     const [credits, setCredits] = useState<MpsBillingCreditsResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -127,9 +125,9 @@ export default function BillingPage() {
         () => getPageFromSearchParams(searchParams),
     );
 
-    const isBillingV2 = credits?.billing_version === "v2";
-    const isOssMode = config?.deploymentMode === "oss";
-    const canPurchaseCredits = isBillingV2 && !isOssMode;
+    const hasAppConfig = !configLoading && config !== null;
+    const isOssMode = hasAppConfig && config.deploymentMode === "oss";
+    const canPurchaseCredits = hasAppConfig && config.deploymentMode !== "oss";
     const totalQuota = credits?.total_quota ?? 0;
     const remainingCredits = credits?.remaining_credits ?? 0;
     const usedCredits = credits?.total_credits_used ?? 0;
@@ -165,13 +163,13 @@ export default function BillingPage() {
             });
 
             if (response.error) {
-                throw new Error(t('fetchError'));
+                throw new Error("Failed to fetch billing credits");
             }
 
             setCredits(response.data ?? null);
         } catch (error) {
             console.error("Failed to fetch billing credits:", error);
-            toast.error(t('fetchError'));
+            toast.error("Failed to fetch billing credits");
         } finally {
             setLoading(false);
             setRefreshing(false);
@@ -226,12 +224,12 @@ export default function BillingPage() {
             window.location.href = checkoutUrl;
         } catch (error) {
             console.error("Failed to create credit purchase URL:", error);
-            toast.error(t('checkoutError'));
+            toast.error("Failed to open checkout");
             setPurchasing(false);
         }
     };
 
-    if (loading) {
+    if (loading || configLoading) {
         return (
             <div className="container mx-auto p-6 space-y-6">
                 <div className="space-y-2">
@@ -251,20 +249,20 @@ export default function BillingPage() {
         <div className="container mx-auto p-6 space-y-6">
             <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div>
-                    <h1 className="text-3xl font-bold mb-2">{t('title')}</h1>
+                    <h1 className="text-3xl font-bold mb-2">Billing</h1>
                     <p className="text-muted-foreground">
-                        {t('description')}
+                        Credits, balance, and account usage for your organization.
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
                     <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
                         <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
-                        {t('refresh')}
+                        Refresh
                     </Button>
                     {canPurchaseCredits && (
                         <Button onClick={handlePurchaseCredits} disabled={purchasing}>
                             <CreditCard className="h-4 w-4 mr-2" />
-                            {purchasing ? t('opening') : t('addCredits')}
+                            {purchasing ? "Opening..." : "Add Credits"}
                         </Button>
                     )}
                 </div>
@@ -274,29 +272,27 @@ export default function BillingPage() {
                 <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/30">
                     <Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-400" />
                     <div className="text-sm text-amber-900 dark:text-amber-200">
-                        <p className="font-medium">{t('ossWarning')}</p>
-                                        <p className="mt-1">
-                            {t.rich('ossWarningBody', {
-                                link: (chunks) => (
-                                    <a
-                                        href="https://app.dograh.com"
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1 font-medium underline underline-offset-2"
-                                    >
-                                        {chunks}
-                                        <ExternalLink className="h-3 w-3" />
-                                    </a>
-                                ),
-                                modelConfigLink: (chunks) => (
-                                    <Link
-                                        href="/model-configurations"
-                                        className="font-medium underline underline-offset-2"
-                                    >
-                                        {chunks}
-                                    </Link>
-                                ),
-                            })}
+                        <p className="font-medium">Credit purchases are unavailable in OSS mode</p>
+                        <p className="mt-1">
+                            You can&apos;t purchase credits from this self-hosted app. Sign up and
+                            purchase credits at{" "}
+                            <a
+                                href="https://app.dograh.com"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 font-medium underline underline-offset-2"
+                            >
+                                app.dograh.com
+                                <ExternalLink className="h-3 w-3" />
+                            </a>
+                            . Then add the generated service key in{" "}
+                            <Link
+                                href="/model-configurations"
+                                className="font-medium underline underline-offset-2"
+                            >
+                                Model Configurations
+                            </Link>
+                            . Usage for that service key is visible in app.dograh.com.
                         </p>
                     </div>
                 </div>
@@ -305,35 +301,35 @@ export default function BillingPage() {
             <div className="grid gap-4 md:grid-cols-2">
                 <Card>
                     <CardHeader className="pb-2">
-                        <CardDescription>{isBillingV2 ? t('creditBalance') : t('creditsRemaining')}</CardDescription>
+                        <CardDescription>{isOssMode ? "Credits remaining" : "Credit balance"}</CardDescription>
                         <CardTitle className="flex items-center gap-2 text-3xl">
                             <CircleDollarSign className="h-6 w-6 text-muted-foreground" />
                             {formatCredits(remainingCredits)}
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <p className="text-sm text-muted-foreground">{t('oneCredit')}</p>
+                        <p className="text-sm text-muted-foreground">1 credit = 1 cent</p>
                     </CardContent>
                 </Card>
 
                 <Card>
                     <CardHeader className="pb-2">
-                        <CardDescription>{t('creditsUsed')}</CardDescription>
+                        <CardDescription>Credits used</CardDescription>
                         <CardTitle className="text-3xl">{formatCredits(usedCredits)}</CardTitle>
                     </CardHeader>
                     <CardContent>
                         <p className="text-sm text-muted-foreground">
-                            {isBillingV2 ? t('totalLedgerDebits') : t('currentAllocationUsage')}
+                            {isOssMode ? "Current allocation usage" : "Total ledger debits"}
                         </p>
                     </CardContent>
                 </Card>
             </div>
 
-            {isBillingV2 ? (
+            {!isOssMode ? (
                 <Card>
                     <CardHeader>
-                        <CardTitle>{t('creditLedger')}</CardTitle>
-                        <CardDescription>{t('creditLedgerDesc')}</CardDescription>
+                        <CardTitle>Credit Ledger</CardTitle>
+                        <CardDescription>Recent grants, purchases, and usage debits.</CardDescription>
                     </CardHeader>
                     <CardContent>
                         {ledgerEntries.length > 0 ? (
@@ -341,13 +337,13 @@ export default function BillingPage() {
                                 <Table>
                                     <TableHeader>
                                         <TableRow className="bg-muted/50">
-                                            <TableHead>{t('table.date')}</TableHead>
-                                            <TableHead>{t('table.activity')}</TableHead>
-                                            <TableHead>{t('table.origin')}</TableHead>
-                                            <TableHead>{t('table.run')}</TableHead>
-                                            <TableHead className="text-right">{t('table.delta')}</TableHead>
-                                            <TableHead className="text-right">{t('table.balance')}</TableHead>
-                                            <TableHead className="text-right">{t('table.amount')}</TableHead>
+                                            <TableHead>Date</TableHead>
+                                            <TableHead>Activity</TableHead>
+                                            <TableHead>Origin</TableHead>
+                                            <TableHead>Run</TableHead>
+                                            <TableHead className="text-right">Delta</TableHead>
+                                            <TableHead className="text-right">Balance</TableHead>
+                                            <TableHead className="text-right">Amount</TableHead>
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
@@ -402,13 +398,13 @@ export default function BillingPage() {
                             </div>
                         ) : (
                             <div className="rounded-lg border border-dashed p-8 text-center text-muted-foreground">
-                                {t('noEntries')}
+                                No ledger entries yet
                             </div>
                         )}
                         {ledgerTotalPages > 1 && (
                             <div className="flex items-center justify-between mt-6">
                                 <p className="text-sm text-muted-foreground">
-                                    {t('pageInfo', {page: ledgerPage, totalPages: ledgerTotalPages})} ({ledgerTotalCount} total entries)
+                                    Page {ledgerPage} of {ledgerTotalPages} ({ledgerTotalCount} total entries)
                                 </p>
                                 <div className="flex gap-2">
                                     <Button
@@ -418,7 +414,7 @@ export default function BillingPage() {
                                         disabled={ledgerPage <= 1 || loading || refreshing}
                                     >
                                         <ChevronLeft className="h-4 w-4" />
-                                        {t('previous')}
+                                        Previous
                                     </Button>
                                     <Button
                                         variant="outline"
@@ -426,7 +422,7 @@ export default function BillingPage() {
                                         onClick={() => handlePageChange(ledgerPage + 1)}
                                         disabled={ledgerPage >= ledgerTotalPages || loading || refreshing}
                                     >
-                                        {t('next')}
+                                        Next
                                         <ChevronRight className="h-4 w-4" />
                                     </Button>
                                 </div>
@@ -437,13 +433,13 @@ export default function BillingPage() {
             ) : (
                 <Card>
                     <CardHeader>
-                        <CardTitle>{t('creditUsage')}</CardTitle>
+                        <CardTitle>Credit Usage</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <Progress value={usagePercent} />
                         <div className="flex justify-between text-sm text-muted-foreground">
-                            <span>{t('usagePercent', { percent: usagePercent })}</span>
-                            <span>{t('creditsOfTotalRemaining', { remaining: formatCredits(remainingCredits), total: formatCredits(totalQuota) })}</span>
+                            <span>{usagePercent}% used</span>
+                            <span>{formatCredits(remainingCredits)} of {formatCredits(totalQuota)} remaining</span>
                         </div>
                     </CardContent>
                 </Card>

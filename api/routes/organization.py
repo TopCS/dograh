@@ -1,4 +1,5 @@
-from typing import List, Optional
+from copy import deepcopy
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
@@ -42,7 +43,6 @@ from api.schemas.telephony_phone_number import (
     ProviderSyncStatus,
 )
 from api.services.auth.depends import (
-    _sync_posthog_organization_mps_billing_v2_status,
     get_user,
     get_user_with_selected_organization,
 )
@@ -69,11 +69,13 @@ from api.services.configuration.registry import (
     ServiceType,
 )
 from api.services.mps_billing import ensure_hosted_mps_billing_account_v2
+from api.services.mps_service_key_client import mps_service_key_client
 from api.services.organization_context import (
     OrganizationContextResponse,
     get_organization_context,
 )
 from api.services.organization_preferences import (
+    external_pbx_integrations_enabled,
     get_organization_preferences,
     upsert_organization_preferences,
 )
@@ -101,12 +103,22 @@ def _sensitive_fields(provider_name: str) -> List[str]:
 
 def _mask_sensitive(provider_name: str, value: dict) -> dict:
     """Return a copy of ``value`` with sensitive fields masked for display."""
-    out = dict(value)
+    out = deepcopy(value)
     for field_name in _sensitive_fields(provider_name):
-        v = out.get(field_name)
+        v = _get_nested_field(out, field_name)
         if v:
-            out[field_name] = mask_key(v)
+            _set_nested_field(out, field_name, mask_key(str(v)))
     return out
+
+
+class TelephonyProviderUIOption(BaseModel):
+    value: str
+    label: str
+
+
+class TelephonyProviderUICondition(BaseModel):
+    field: str
+    equals: Any
 
 
 class TelephonyProviderUIField(BaseModel):
@@ -119,6 +131,9 @@ class TelephonyProviderUIField(BaseModel):
     sensitive: bool
     description: Optional[str] = None
     placeholder: Optional[str] = None
+    options: Optional[List[TelephonyProviderUIOption]] = None
+    visible_when: Optional[TelephonyProviderUICondition] = None
+    section: Optional[str] = None
 
 
 class TelephonyProviderMetadata(BaseModel):
@@ -148,6 +163,22 @@ class TelephonyConfigWarningsResponse(BaseModel):
     vonage_missing_signature_secret_count: int
 
 
+class ModelConfigurationMetricPrice(BaseModel):
+    metric_code: str
+    display_name: str
+    unit: str
+    price_per_minute: float
+    currency: str
+    rounding_policy: str
+
+
+class ModelConfigurationPricingResponse(BaseModel):
+    """MPS-owned effective prices relevant to model configuration choices."""
+
+    platform_usage: ModelConfigurationMetricPrice | None = None
+    dograh_model: ModelConfigurationMetricPrice | None = None
+
+
 @router.get("/context", response_model=OrganizationContextResponse)
 async def get_current_organization_context(user: UserModel = Depends(get_user)):
     """Return organization-scoped configuration signals owned by Dograh."""
@@ -168,6 +199,9 @@ async def get_telephony_providers_metadata(user: UserModel = Depends(get_user)):
     if not user.selected_organization_id:
         raise HTTPException(status_code=400, detail="No organization selected")
 
+    external_pbx_enabled = await external_pbx_integrations_enabled(
+        user.selected_organization_id
+    )
     providers = []
     for spec in telephony_registry.all_specs():
         if spec.ui_metadata is None:
@@ -185,8 +219,30 @@ async def get_telephony_providers_metadata(user: UserModel = Depends(get_user)):
                         sensitive=f.sensitive,
                         description=f.description,
                         placeholder=f.placeholder,
+                        options=(
+                            [
+                                {"value": option.value, "label": option.label}
+                                for option in f.options
+                            ]
+                            if f.options
+                            else None
+                        ),
+                        visible_when=(
+                            {
+                                "field": f.visible_when.field,
+                                "equals": f.visible_when.equals,
+                            }
+                            if f.visible_when
+                            else None
+                        ),
+                        section=f.section,
                     )
                     for f in spec.ui_metadata.fields
+                    if not f.feature_gate
+                    or (
+                        f.feature_gate == "external_pbx_integrations"
+                        and external_pbx_enabled
+                    )
                 ],
                 docs_url=spec.ui_metadata.docs_url,
             )
@@ -244,7 +300,6 @@ async def _model_configuration_v2_response(
     configuration: OrganizationAIModelConfigurationV2 | None = None,
 ) -> OrganizationAIModelConfigurationResponse:
     resolved = await get_resolved_ai_model_configuration(
-        user_id=user.id,
         organization_id=user.selected_organization_id,
     )
     raw_configuration = (
@@ -312,6 +367,34 @@ async def get_model_configuration_v2(
     user: UserModel = Depends(get_user_with_selected_organization),
 ):
     return await _model_configuration_v2_response(user=user)
+
+
+@router.get(
+    "/model-configurations/v2/pricing",
+    response_model=ModelConfigurationPricingResponse,
+)
+async def get_model_configuration_pricing(
+    user: UserModel = Depends(get_user_with_selected_organization),
+) -> ModelConfigurationPricingResponse:
+    """Return the hosted organization prices shown in Model Configurations."""
+    if DEPLOYMENT_MODE == "oss":
+        return ModelConfigurationPricingResponse()
+
+    try:
+        pricing = await mps_service_key_client.get_billing_pricing(
+            user.selected_organization_id,
+        )
+        return ModelConfigurationPricingResponse.model_validate(pricing)
+    except Exception as exc:
+        logger.error(
+            "Failed to get MPS model-configuration pricing for organization {}: {}",
+            user.selected_organization_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to retrieve model configuration pricing",
+        ) from exc
 
 
 @router.put(
@@ -391,22 +474,21 @@ async def migrate_model_configuration_v2(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=exc.args[0])
 
-    billing_account_status = None
     if DEPLOYMENT_MODE != "oss":
         try:
-            billing_account_status = await ensure_hosted_mps_billing_account_v2(
+            await ensure_hosted_mps_billing_account_v2(
                 organization_id,
                 created_by=str(user.provider_id),
             )
         except Exception as exc:
             logger.error(
-                "Failed to initialize MPS billing v2 account for organization {}: {}",
+                "Failed to initialize MPS billing account for organization {}: {}",
                 organization_id,
                 exc,
             )
             raise HTTPException(
                 status_code=502,
-                detail="Failed to initialize MPS billing v2 account",
+                detail="Failed to initialize MPS billing account",
             )
 
     await upsert_organization_ai_model_configuration_v2(
@@ -417,14 +499,6 @@ async def migrate_model_configuration_v2(
         organization_id=organization_id,
         fallback_user_config=legacy,
     )
-    if DEPLOYMENT_MODE != "oss":
-        _sync_posthog_organization_mps_billing_v2_status(
-            organization_id,
-            uses_mps_billing_v2=bool(
-                billing_account_status
-                and billing_account_status.get("billing_mode") == "v2"
-            ),
-        )
     return await _model_configuration_v2_response(
         user=user,
         configuration=configuration,
@@ -462,24 +536,34 @@ async def get_model_configuration_preferences_legacy(
     return await get_preferences(user=user)
 
 
-@router.put(
-    "/model-configurations/preferences",
-    response_model=OrganizationPreferences,
-    include_in_schema=False,
-)
-async def save_model_configuration_preferences_legacy(
-    request: OrganizationPreferences,
-    user: UserModel = Depends(get_user_with_selected_organization),
-):
-    return await save_preferences(request=request, user=user)
-
-
 def preserve_masked_fields(provider: str, request_dict: dict, existing: dict):
     """If the client re-submitted a masked sensitive field, restore the original."""
     for field_name in _sensitive_fields(provider):
-        v = request_dict.get(field_name)
-        if v and is_mask_of(v, existing.get(field_name, "")):
-            request_dict[field_name] = existing[field_name]
+        v = _get_nested_field(request_dict, field_name)
+        existing_value = _get_nested_field(existing, field_name)
+        if v and is_mask_of(v, existing_value or ""):
+            _set_nested_field(request_dict, field_name, existing_value)
+
+
+def _get_nested_field(value: dict, dotted_path: str):
+    current = value
+    for part in dotted_path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _set_nested_field(value: dict, dotted_path: str, field_value) -> None:
+    current = value
+    parts = dotted_path.split(".")
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    current[parts[-1]] = field_value
 
 
 def _credentials_from_payload(config: TelephonyConfigRequest) -> dict:

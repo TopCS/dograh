@@ -1,0 +1,370 @@
+---
+title: "LiveKit OSS Bridge"
+description: "Run the open-source LiveKit bridge for SIP and Room inbound patterns with Dograh"
+---
+
+## Overview
+
+LiveKit OSS Bridge is Dograh's **open-source, self-hosted telephony path**. Instead of using a built-in telephony provider that streams audio into Dograh over webhooks and WebSockets, the LiveKit bridge runs its own **LiveKit AgentServer** (`dograh-livekit`) that connects directly to a LiveKit server — [LiveKit Cloud](https://cloud.livekit.io) or a self-hosted LiveKit deployment — and handles calls in-process.
+
+The bridge supports two inbound patterns:
+
+- **SIP inbound** — a LiveKit SIP trunk receives PSTN calls and dispatch rules route them into rooms where the agent answers.
+- **Room inbound** — a room is created directly (programmatically or from a WebRTC client) with metadata describing the workflow, and the agent joins it.
+
+Both patterns deliver the full Dograh experience — workflow execution, LLM/STT/TTS, tools, and knowledge base search — because the agent fetches each workflow's runtime configuration from the Dograh internal API and records sessions back to Dograh.
+
+<Note>
+The LiveKit bridge is an **OSS option** that complements built-in telephony providers (Twilio, Vonage, etc.). It does not replace them. See [LiveKit vs Built-in Providers](#livekit-vs-built-in-providers) to choose the right path for your deployment.
+</Note>
+
+## Prerequisites
+
+- A **LiveKit Cloud** project (free tier available) **or** a self-hosted LiveKit server
+- LiveKit **API key** and **API secret** (from your LiveKit project settings)
+- For SIP inbound: the LiveKit SIP feature enabled and a trunk provisioned with a phone number / DID
+- A Dograh instance (self-hosted via `docker-compose.yaml`) with the `livekit` compose profile
+- AI provider API keys for the voice stack the agent uses:
+  - **Google** (`GOOGLE_API_KEY`) — Gemini models / Google realtime voice (required)
+  - **OpenAI** (`OPENAI_API_KEY`) — GPT models and OpenAI TTS/STT plugins (optional)
+  - **Deepgram** (`DEEPGRAM_API_KEY`) — STT (optional)
+  - **Cartesia** (`CARTESIA_API_KEY`) — TTS (optional)
+
+## Architecture
+
+dograh-livekit runs as a **LiveKit AgentServer** — the agent worker model of the LiveKit Agents framework. In production compose deployments it runs as its own container (`dograh-livekit`), enabled with the `livekit` profile.
+
+```text
+PSTN / SIP ──▶ LiveKit SIP trunk ──▶ dispatch rule ──┐
+                                                     ▼
+WebRTC client ──▶ LiveKit room (metadata) ──────▶ dograh-livekit (AgentServer)
+        (Room Inbound)                                 │  agent_name: "dograh-agent"
+                                                     ▼
+                                          Dograh internal API
+                                     (/api/internal/*, X-Internal-Token)
+                                          workflow runtime config,
+                                          session records, KB search
+```
+
+Key facts:
+
+- The AgentServer registers one agent, **`dograh-agent`**, and handles every room dispatched to it (`@server.rtc_session(agent_name="dograh-agent")`).
+- On a new session the agent reads the **room metadata** to learn which workflow to run, fetches the workflow's runtime configuration (same effective LLM/STT/TTS resolution Pipecat uses) from the Dograh internal API, creates a **session record**, and runs the voice session.
+- When the call ends the bridge deletes the LiveKit room and notifies Dograh via the internal hangup endpoint.
+- The bridge authenticates to Dograh's internal API with the **`X-Internal-Token`** header using a shared secret.
+
+### How it differs from built-in telephony providers
+
+| | Built-in providers (Twilio, Vonage, …) | LiveKit OSS bridge |
+|---|---|---|
+| Audio delivery | WebSocket streaming from provider to Dograh | LiveKit room audio, handled in the agent process |
+| Deployment | Dograh manages the integration | You run a LiveKit server + the `dograh-livekit` container |
+| License | Provider SaaS (managed) | Open source, self-hosted |
+| Media stack | Pipecat pipeline in the Dograh API | LiveKit Agents framework in the bridge |
+| Inbound routing | Phone number webhook + workflow assignment | SIP trunk + dispatch rules, or direct room creation |
+| AI stack | Same (LLM/STT/TTS providers) | Same (Google, OpenAI, Deepgram, Cartesia) |
+
+The AI model stack, workflow engine, tools, and knowledge base are identical in both paths — only the telephony/media transport differs.
+
+## Setup
+
+### Step 1: Enable the `livekit` compose profile
+
+Both `docker-compose.yaml` (production/OSS) and `docker-compose-local.yaml` (local dev) ship a `dograh-livekit` service that only runs when the **`livekit`** compose profile is active:
+
+```yaml
+dograh-livekit:
+  profiles: ["livekit"]
+  restart: unless-stopped
+  depends_on:
+    api:
+      condition: service_healthy
+```
+
+### Step 2: Configure environment variables
+
+Copy the LiveKit settings into the compose `.env` file (the root `.env` next to `docker-compose.yaml`). The exact list is documented in `api/.env.example` under **"LiveKit Agent Bridge Configuration"**.
+
+Minimal set for the bridge to start and connect:
+
+```dotenv
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=APIxxxxxxxxxxxx
+LIVEKIT_API_SECRET=secret_xxxxxxxx
+
+DOGRAH_API_URL=http://api:8000
+DOGRAH_INTERNAL_TOKEN=choose-a-strong-shared-secret
+
+GOOGLE_API_KEY=your-google-key
+```
+
+<Note>
+`DOGRAH_INTERNAL_TOKEN` is a **shared secret**: the `api` service and the bridge must use the **same value**. Requests with a different token are rejected with `403`. In `docker-compose.yaml` this variable is wired to both the `api` service and the `dograh-livekit` service, so one `.env` value is enough.
+</Note>
+
+### Step 3: Start the stack
+
+```bash
+docker compose --profile livekit up -d
+```
+
+This starts the full Dograh stack plus the `dograh-livekit` bridge. Locally, use `docker-compose-local.yaml`:
+
+```bash
+docker compose -f docker-compose-local.yaml --profile livekit up -d
+```
+
+<Note>
+In local development the bridge reaches the host-run API via `http://host.docker.internal:8000` (the `docker-compose-local.yaml` default). Ensure the host API is running with the same `DOGRAH_INTERNAL_TOKEN`.
+</Note>
+
+### Step 4: Verify the bridge is running
+
+```bash
+docker compose ps dograh-livekit
+docker compose logs -f dograh-livekit
+```
+
+The container should be `Up` (healthy after the `api` service is healthy) with no tracebacks. It is idle until a room is dispatched to `dograh-agent` — see [Testing](#testing).
+
+## SIP Inbound Pattern
+
+SIP inbound is the traditional PSTN path: a phone number rings, the call reaches LiveKit as a SIP trunk call, and the agent answers.
+
+### How it works
+
+1. **SIP trunk** — LiveKit receives the PSTN call on a configured SIP inbound trunk. The bridge locates (or auto-creates) a trunk named `dograh-inbound`; it can also reuse any existing trunk whose name contains `dograh`.
+2. **Dispatch rule** — a LiveKit **SIP dispatch rule** matches the call and creates a room with a deterministic prefix plus metadata:
+
+```json
+{
+  "workflow_id": 42,
+  "org_id": 7,
+  "channel": "voice_sip"
+}
+```
+
+3. **Agent joins** — the rule's `room_config` dispatches the **`dograh-agent`** worker into the room, the agent fetches the workflow runtime config by `workflow_id`, records the session, and handles the call.
+4. **Hangup** — when the SIP participant leaves, the bridge ends the session, deletes the room, and records the hangup in Dograh.
+
+### The dispatch rule contract
+
+`api/services/livekit_bridge/sync.py` creates the rule for workflow `{workflow_id}` in organization `{org_id}`:
+
+```json
+{
+  "name": "dograh-wf-42",
+  "trunk_ids": ["<sip-trunk-id>"],
+  "rule": {
+    "dispatch_rule_individual": {
+      "room_prefix": "dograh-call-42-"
+    }
+  },
+  "metadata": {
+    "workflow_id": 42,
+    "org_id": 7,
+    "channel": "voice_sip"
+  },
+  "room_config": {
+    "agents": [{ "agent_name": "dograh-agent" }]
+  }
+}
+```
+
+### When dispatch rules sync
+
+Dispatch rules are synchronized **automatically**:
+
+- Whenever a workflow is **published** in Dograh, a background task creates or updates its dispatch rule (best-effort — failure never blocks publishing).
+- On API **startup**, rules are synchronized for all published (`active`, released) workflows that do not already have a `dispatch_rule_id`.
+
+The mapping (trunk id, dispatch rule id) is stored per workflow in `workflow_configurations.livekit`.
+
+<Info>
+Automatic sync runs inside the **`api` process**, so the `api` service also needs `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` in its environment for the sync to activate (compose interpolates these from the same root `.env`). If the API process lacks them, sync silently skips and you can create the dispatch rule manually in the LiveKit console using the contract above.
+</Info>
+
+## Room Inbound Pattern
+
+The Room pattern is the programmatic / WebRTC path: a room is created (outside the bridge) and the agent joins it because the room was created **with an agent dispatch**.
+
+### How it works
+
+1. A client creates a LiveKit room — via the LiveKit Room API, the LiveKit JS/Swift SDKs, or Dograh's `livekit_sip` outbound provider.
+2. The room is created **with `agents`** (`RoomAgentDispatch` for `dograh-agent`) — required on LiveKit OSS, which has no Cloud-only auto-dispatch.
+3. The room carries **metadata** describing the workflow and caller.
+4. The AgentServer receives the dispatch job, parses the metadata, and runs the session until the room is inactive.
+
+### Room metadata contract
+
+The agent requires **`workflow_id`** (or `deploy_id`) and **`org_id`**; everything else is optional and passed into the session as runtime context:
+
+```json
+{
+  "workflow_id": 42,
+  "org_id": 7,
+  "channel": "websocket",
+  "sender_phone": "+393331234567",
+  "user_id": "caller-abc",
+  "campaign_id": "12",
+  "lead_id": "34"
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `workflow_id` | yes* | Workflow to run (or `deploy_id`) |
+| `org_id` | yes | Organization that owns the workflow |
+| `channel` | no | Session channel; defaults to `voice_sip` |
+| `sender_phone` | no | Caller phone number, passed to the workflow |
+| `user_id` | no | Stable caller identity |
+| `campaign_id` / `lead_id` | no | Campaign/lead context for the session |
+| `vicidial_identity` | no | ViciDial call identity (dict) when calls originate from ViciDial |
+
+\* Without a valid `workflow_id` and `org_id` the agent logs an error and ends the session.
+
+<Note>
+Use `channel: "voice_sip"` for SIP-backed sessions (the bridge waits for the SIP participant to connect and disconnect). For pure WebRTC/room sessions set a different channel value (e.g. `"websocket"`); the bridge then keeps the session alive until the room goes inactive.
+</Note>
+
+### Outbound calls via `create_room` + agents
+
+Dograh's built-in `livekit_sip` outbound provider follows exactly this pattern (see `api/services/telephony/providers/livekit_sip/provider.py`): create the room **with the agent dispatch first**, then originate the SIP leg:
+
+```python
+# Pseudocode mirroring the implementation
+await lkapi.room.create_room(
+    CreateRoomRequest(
+        name="dograh-call-123",
+        agents=[RoomAgentDispatch(agent_name="dograh-agent")],  # required on OSS
+        metadata=json.dumps({
+            "workflow_id": "42",
+            "org_id": "7",
+            "channel": "voice_sip",
+            "sender_phone": to_number,
+            "campaign_id": "...", "lead_id": "...",
+        }),
+    )
+)
+
+await lkapi.sip.create_sip_participant(
+    CreateSIPParticipantRequest(
+        room_name="dograh-call-123",
+        sip_trunk_id=trunk_id,
+        sip_call_to=to_number,
+        wait_until_answered=True,
+    )
+)
+```
+
+The room name convention is `dograh-call-{workflow_run_id}`.
+
+## Configuration in Dograh
+
+Add a **LiveKit SIP** telephony configuration in Dograh (required for SIP-based outbound calls; inbound SIP works from the bridge + dispatch rules alone):
+
+1. Navigate to **/telephony-configurations** and click **Add configuration**
+2. Select **LiveKit SIP** as the provider
+3. Enter:
+   - **SIP trunk ID** — the LiveKit SIP trunk used for outbound (or the auto-created `dograh-inbound` trunk)
+   - **API key** — your LiveKit API key
+   - **API secret** — your LiveKit API secret
+4. Save the configuration
+
+Optional, for consistency with the rest of the telephony UI:
+
+- **Phone number assignment** — add at least one phone number (E.164) to the configuration if you use it as a source/caller number or want it listed
+- **Inbound workflow assignment** — assigning a workflow to a phone number behaves like the built-in providers' inbound routing; for LiveKit the actual dispatch happens through trunk + dispatch rules (see [SIP Inbound Pattern](#sip-inbound-pattern)), which sync automatically when a workflow is published
+
+## Environment Variables
+
+Configured in the compose `.env` and interpolated into the `dograh-livekit` service. Reference `api/.env.example` (LiveKit Agent Bridge Configuration) and `dograh-livekit/.env.example`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LIVEKIT_URL` | — | LiveKit server WebSocket URL, e.g. `wss://your-project.livekit.cloud` |
+| `LIVEKIT_API_KEY` | — | LiveKit API key |
+| `LIVEKIT_API_SECRET` | — | LiveKit API secret (keep confidential) |
+| `DOGRAH_API_URL` | `http://api:8000` | Dograh internal API base URL (`http://host.docker.internal:8000` in local dev compose) |
+| `DOGRAH_INTERNAL_TOKEN` | — | Shared secret for internal API auth. Must match the `api` service's value |
+| `GOOGLE_API_KEY` | — | Google AI API key (Gemini / Google realtime voice) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | — | Path to a GCP service-account JSON for Vertex AI (optional) |
+| `GOOGLE_CLOUD_PROJECT` | — | GCP project ID (optional, used with application credentials) |
+| `OPENAI_API_KEY` | — | OpenAI API key (GPT / OpenAI TTS/STT) |
+| `DEEPGRAM_API_KEY` | — | Deepgram API key (STT) |
+| `CARTESIA_API_KEY` | — | Cartesia API key (TTS) |
+| `LOG_LEVEL` | `INFO` | Bridge log level |
+
+<Note>
+Vertex AI service-account files must exist **inside the container** — mount the file or use a Docker volume if you set `GOOGLE_APPLICATION_CREDENTIALS`.
+</Note>
+
+## Testing
+
+1. **Service health** — confirm the container is running:
+
+   ```bash
+   docker compose ps dograh-livekit
+   docker compose logs -f dograh-livekit
+   ```
+
+   Logs show the LiveKit agents framework starting the AgentServer with the `dograh-agent` worker; no tracebacks means the credential handshake to LiveKit succeeded.
+
+2. **Room pattern test** — create a room with metadata `{"workflow_id": <id>, "org_id": <id>, "channel": "websocket"}` and `agents: [{"agent_name": "dograh-agent"}]`. The bridge logs `Session start — room=... workflow=... channel=...` and the agent joins.
+
+3. **SIP pattern test** — place a test call to your LiveKit trunk number. A dispatch rule must exist for the workflow (publish the workflow first), the room is created as `dograh-call-{workflow_id}-*`, and the agent answers.
+
+4. **Dashboard verification** — in the Dograh dashboard, the call appears as a session/workflow run named `LK-{room}`; on hangup the session closes and the room is deleted.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Service won't start">
+    - The `livekit` compose profile must be enabled: `docker compose --profile livekit up -d`
+    - `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` must be set — without them the container starts but cannot connect to a LiveKit server
+    - Check `docker compose logs dograh-livekit` for missing variable or authentication errors
+  </Accordion>
+
+  <Accordion title="Agent doesn't join rooms">
+    - Room **metadata is required**: `workflow_id` and `org_id` must be present, otherwise the agent logs an error and never starts a session
+    - For the Room pattern, create the room **with** `agents: [{"agent_name": "dograh-agent"}]` — on LiveKit OSS there is no auto-dispatch
+    - If `workflow_id` references a workflow with no published version, `fetch_agent_config` fails with `404` (workflow not found / no published version)
+  </Accordion>
+
+  <Accordion title="SIP calls fail">
+    - Verify the SIP trunk is configured in LiveKit and points to your LiveKit project (number / trunk provisioning happens in LiveKit, not Dograh)
+    - Verify a dispatch rule exists for the workflow: publish the workflow, then check `workflow_configurations.livekit` or the LiveKit console for rule `dograh-wf-{workflow_id}`
+    - Automatic sync needs `LIVEKIT_*` credentials in the **`api` process environment** — without them the best-effort sync silently skips
+  </Accordion>
+
+  <Accordion title="Authentication errors">
+    - `403 Forbidden` from the Dograh internal API: `DOGRAH_INTERNAL_TOKEN` differs between the `api` service and the bridge — they must match exactly
+    - `503 Internal API not configured`: the `api` service has no `DOGRAH_INTERNAL_TOKEN` set at all
+    - LiveKit credential errors at startup: check `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` against the project settings
+  </Accordion>
+</AccordionGroup>
+
+## LiveKit vs Built-in Providers
+
+### When to use LiveKit OSS
+
+- You need a **fully open-source, self-hosted** telephony path
+- You already run **LiveKit Cloud or a self-hosted LiveKit server** and want to reuse it
+- You want agent workers running **outside the Dograh API process**, in LiveKit's agent ecosystem
+- You need the **Room / WebRTC inbound pattern** (browser or custom clients joining rooms directly)
+
+### When to use built-in providers
+
+- You want a **managed provider** (Twilio, Vonage, Plivo, Telnyx, Cloudonix, Vobiz, Asterisk ARI) with webhook-based inbound routing
+- You prefer **simpler setup** — no extra LiveKit server, no compose profile, no shared-token wiring
+- Your existing phone numbers / SIP trunks are already configured with a built-in provider
+
+### Feature parity
+
+Both paths support the same AI providers (Google/Gemini, OpenAI, Deepgram, Cartesia), the same workflow engine, tools, and knowledge base. The LiveKit bridge additionally provides **SIP dispatch rules** and **direct room entry**; built-in providers provide provider-managed inbound webhooks, call status tracking, and transfer.
+
+## Next Steps
+
+- [Telephony overview](/integrations/telephony/overview)
+- [Twilio integration](/integrations/telephony/twilio)
+- [Inbound calling guide](/integrations/telephony/inbound)

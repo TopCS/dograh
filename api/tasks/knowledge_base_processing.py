@@ -143,14 +143,13 @@ async def process_knowledge_base_document(
         embeddings_base_url = None
         embeddings_endpoint = None
         embeddings_api_version = None
-        if retrieval_mode == "chunked" and document.created_by:
+        if retrieval_mode == "chunked":
             from api.services.configuration.ai_model_configuration import (
                 apply_managed_embeddings_base_url,
                 get_resolved_ai_model_configuration,
             )
 
             resolved_config = await get_resolved_ai_model_configuration(
-                user_id=document.created_by,
                 organization_id=document.organization_id,
             )
             effective_config = resolved_config.effective
@@ -215,7 +214,7 @@ async def process_knowledge_base_document(
             return
 
         # Ingestion runs outside any workflow run, so resolve the MPS correlation
-        # id here (mint only for orgs already on v2; never create an account).
+        # id here.
         embedding_service = await build_embedding_service(
             db_client=db_client,
             provider=embeddings_provider,
@@ -224,8 +223,6 @@ async def process_knowledge_base_document(
             base_url=embeddings_base_url,
             endpoint=embeddings_endpoint,
             api_version=embeddings_api_version,
-            organization_id=organization_id,
-            created_by=created_by_provider_id,
             resolve_correlation=True,
         )
 

@@ -1,7 +1,6 @@
-import { useTranslations } from 'next-intl';
-
 import * as LucideIcons from 'lucide-react';
 import { Circle, ExternalLink, type LucideIcon, X } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 import { useEffect, useMemo } from 'react';
 
 import type { NodeSpec } from '@/client/types.gen';

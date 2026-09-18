@@ -54,6 +54,7 @@ class WorkflowRunMode(Enum):
     WEBRTC = "webrtc"
     SMALLWEBRTC = "smallwebrtc"
     TEXTCHAT = "textchat"
+    LIVEKIT_SIP = "livekit_sip"
 
     # Historical, not used anymore. Don't
     # use and don't remove
@@ -200,3 +201,5 @@ class PostHogEvent(str, Enum):
     SIGNED_IN = "signed_in"
     ORGANIZATION_CREATED = "organization_created"
     ORGANIZATION_USER_ASSOCIATED = "organization_user_associated"
+    # usage_* events track orgs hitting capacity/limit boundaries
+    USAGE_CONCURRENT_CALL_LIMIT_REACHED = "usage_concurrent_call_limit_reached"

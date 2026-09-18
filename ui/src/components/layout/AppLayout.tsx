@@ -1,19 +1,17 @@
 "use client";
 
 import { AlertTriangle, Menu, RefreshCw } from "lucide-react";
-import { Link, usePathname } from "@/i18n/routing";
 import { useTranslations } from "next-intl";
-import posthog from "posthog-js";
 import React, { ReactNode } from "react";
 
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { Button } from "@/components/ui/button";
 import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
-import { PostHogEvent } from "@/constants/posthog-events";
 import { useAppConfig } from "@/context/AppConfigContext";
 import { LeadFormsProvider } from "@/context/LeadFormsContext";
+import { Link, usePathname } from "@/i18n/routing";
 import { HIDE_EXTERNAL_LINKS } from "@/lib/env";
 
-import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { AppSidebar } from "./AppSidebar";
 import { GitHubStarBadge } from "./GitHubStarBadge";
 

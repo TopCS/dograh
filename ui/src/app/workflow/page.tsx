@@ -16,8 +16,9 @@ import WorkflowLayout from "./WorkflowLayout";
 export const dynamic = 'force-dynamic';
 
 import { cookies } from "next/headers";
-import itMessages from "../../../messages/it.json";
+
 import enMessages from "../../../messages/en.json";
+import itMessages from "../../../messages/it.json";
 
 // Server component for workflow list
 async function WorkflowList() {
