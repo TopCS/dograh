@@ -44,6 +44,9 @@ jobs:
       DOGRAH_INTERNAL_TOKEN: test-token
       LOG_LEVEL: DEBUG
       PYTHONPATH: ${{ github.workspace }}
+      # The failure-notification step is skipped when this secret is not
+      # configured on the repository (e.g. fork without SLACK_WEBHOOK_URL).
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
     steps:
       - name: Checkout repo (with pipecat submodule)
@@ -63,6 +66,10 @@ jobs:
 
       - name: Install dograh-livekit dev dependencies
         run: |
+          if [ ! -d dograh-livekit ]; then
+            echo "::error::dograh-livekit/ is not present in this tree (paths filter ran, but the merge ref lacks the package)."
+            exit 1
+          fi
           if command -v uv >/dev/null 2>&1; then
             uv pip install --python .venv/bin/python -e "./dograh-livekit[dev]"
           else
@@ -74,9 +81,11 @@ jobs:
         run: pytest tests/ -xvs
 
       - name: Send Slack notification - Failure
-        if: failure()
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1.26.0
         env:
+          # Job-level SLACK_WEBHOOK_URL (empty when the secret is not
+          # configured) lets the guard above skip cleanly.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         with:
           payload: |
