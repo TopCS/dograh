@@ -27,3 +27,7 @@ node_modules/
 .superpowers/
 .gstack/
 *.bak
+
+# Local tooling artifacts
+.codegraph/
+.rpiv/
