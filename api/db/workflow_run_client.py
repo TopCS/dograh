@@ -66,6 +66,21 @@ class WorkflowRunClient(BaseDBClient):
                         f"Workflow definition {definition_id} does not belong to "
                         f"workflow {workflow.id}"
                     )
+            else:
+                # No explicit definition: pin the workflow's released definition
+                # (falling back to is_current) so every run carries a snapshot of
+                # the graph it executed. Callers that resolved a definition (e.g.
+                # draft/test runs) pass definition_id explicitly and skip this.
+                if workflow.released_definition_id:
+                    definition_id = workflow.released_definition_id
+                else:
+                    current_def_result = await session.execute(
+                        select(WorkflowDefinitionModel.id).where(
+                            WorkflowDefinitionModel.workflow_id == workflow.id,
+                            WorkflowDefinitionModel.is_current == True,
+                        )
+                    )
+                    definition_id = current_def_result.scalar_one_or_none()
 
             # Get the current storage backend based on ENABLE_AWS_S3 flag
             current_backend = StorageBackend.get_current_backend()
