@@ -180,14 +180,120 @@ class EndCallConfig(BaseModel):
     )
 
 
+class HttpTransferResolverConfig(BaseModel):
+    """HTTP endpoint used to resolve transfer destination at call time."""
+
+    type: Literal["http"] = Field(default="http", description="Resolver type.")
+    url: str = Field(description="HTTP or HTTPS endpoint for transfer resolution.")
+    headers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Static headers to include with every resolver request.",
+    )
+    credential_uuid: Optional[str] = Field(
+        default=None,
+        description="Reference to an external credential for resolver authentication.",
+    )
+    timeout_ms: int = Field(
+        default=3000,
+        ge=500,
+        le=5000,
+        description="Resolver request timeout in milliseconds.",
+    )
+    wait_message: Optional[str] = Field(
+        default=None,
+        description="Optional short message played while Dograh resolves routing.",
+    )
+    parameters: Optional[List[ToolParameter]] = Field(
+        default=None,
+        description="Parameters the model may provide when calling this transfer tool.",
+    )
+    preset_parameters: Optional[List[PresetToolParameter]] = Field(
+        default=None,
+        description=(
+            "Parameters injected by Dograh from fixed values or workflow context "
+            "templates."
+        ),
+    )
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, v: str) -> str:
+        if not isinstance(v, str) or not v.startswith(("http://", "https://")):
+            raise ValueError("config.resolver.url must be an http(s) URL")
+        return v
+
+
+class ContextDestinationRoute(BaseModel):
+    """Map one gathered-context value to an external-PBX destination."""
+
+    context_value: str = Field(min_length=1, max_length=255)
+    destination: str = Field(min_length=1, max_length=255)
+
+    @field_validator("context_value", "destination")
+    @classmethod
+    def strip_non_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("mapping values cannot be blank")
+        return stripped
+
+
+class ContextDestinationMappingConfig(BaseModel):
+    """Resolve an external-PBX destination from gathered context."""
+
+    context_path: str = Field(
+        min_length=1,
+        max_length=255,
+        description=(
+            "Gathered-context path or extracted-variable name used for routing."
+        ),
+    )
+    routes: List[ContextDestinationRoute] = Field(min_length=1, max_length=100)
+    fallback_destination: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Optional provider-native fallback destination.",
+    )
+
+    @field_validator("context_path")
+    @classmethod
+    def strip_context_path(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("context path cannot be blank")
+        return stripped
+
+    @field_validator("fallback_destination")
+    @classmethod
+    def normalize_fallback(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def validate_unique_values(self):
+        values = [route.context_value.casefold() for route in self.routes]
+        if len(values) != len(set(values)):
+            raise ValueError("context mapping values must be unique")
+        return self
+
+
 class TransferCallConfig(BaseModel):
     """Configuration for Transfer Call tools."""
 
+    destination_source: Literal["static", "dynamic", "context_mapping"] = Field(
+        default="static",
+        description=(
+            "Whether the destination is static/template, resolved by HTTP, or "
+            "mapped from gathered context to an external-PBX destination."
+        ),
+    )
     destination: str = Field(
+        default="",
         description=(
             "Phone number, SIP endpoint, or template to transfer the call to, e.g. "
             "+1234567890, PJSIP/1234, or {{initial_context.transfer_destination}}."
-        )
+        ),
     )
     messageType: Literal["none", "custom", "audio"] = Field(
         default="none", description="Type of message to play before transfer."
@@ -204,6 +310,38 @@ class TransferCallConfig(BaseModel):
         le=120,
         description="Maximum seconds to wait for the destination to answer.",
     )
+    parameters: Optional[List[ToolParameter]] = Field(
+        default=None,
+        description=(
+            "Parameters the model may provide when calling this transfer tool, "
+            "for example state, department, or transfer reason."
+        ),
+    )
+    resolver: Optional[HttpTransferResolverConfig] = Field(
+        default=None,
+        description="Optional resolver that determines transfer routing at call time.",
+    )
+    context_mapping: Optional[ContextDestinationMappingConfig] = Field(
+        default=None,
+        description="Optional gathered-context to external-PBX destination mapping.",
+    )
+
+    @model_validator(mode="after")
+    def validate_destination_source_config(self):
+        if self.destination_source == "dynamic" and self.resolver is None:
+            raise ValueError(
+                "config.resolver is required when destination_source is dynamic"
+            )
+        if (
+            self.destination_source == "context_mapping"
+            and self.context_mapping is None
+        ):
+            raise ValueError(
+                "config.context_mapping is required when destination_source is "
+                "context_mapping"
+            )
+        return self
+
 
 class McpToolConfig(BaseModel):
     """Configuration for a customer MCP server tool definition."""
@@ -423,3 +561,32 @@ class McpRefreshResponse(BaseModel):
     tool_uuid: str
     discovered_tools: list = Field(default_factory=list)
     error: Optional[str] = None
+
+
+class ToolTestRequest(BaseModel):
+    """Request body for testing an HTTP API tool outside a live call."""
+
+    llm_params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Values for parameters normally supplied by the model.",
+    )
+    preset_params: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Resolved values for parameters normally supplied from presets.",
+    )
+
+
+class ToolTestResponse(BaseModel):
+    """Result of testing an HTTP API tool."""
+
+    status: str
+    status_code: Optional[int] = None
+    data: Optional[Any] = None
+    error: Optional[str] = None
+    hint: Optional[str] = None
+    request_method: str
+    request_url: str
+    request_headers: Dict[str, str] = Field(default_factory=dict)
+    request_body: Optional[Dict[str, Any]] = None
+    request_params: Optional[Dict[str, Any]] = None
+    duration_ms: int

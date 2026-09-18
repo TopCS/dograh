@@ -1,0 +1,347 @@
+"""Internal API endpoints for dograh-livekit bridge.
+
+All endpoints are protected by X-Internal-Token header.
+Not versioned — these are private, system-internal endpoints.
+"""
+
+import os
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from pydantic import BaseModel, field_validator
+
+router = APIRouter(
+    prefix="/api/internal",
+    tags=["internal"],
+    responses={404: {"description": "Not found"}},
+)
+
+
+# ── Auth ────────────────────────────────────────────────────────────────────
+
+
+async def _verify_internal_token(x_internal_token: str = Header(...)):
+    expected = os.getenv("DOGRAH_INTERNAL_TOKEN", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Internal API not configured")
+    if x_internal_token != expected:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+# ── Schemas ─────────────────────────────────────────────────────────────────
+
+
+class SearchRequest(BaseModel):
+    query: str
+    kb_refs: list[str] | None = None
+
+
+class CreateSessionRequest(BaseModel):
+    workflow_id: str
+    org_id: str
+    room_name: str
+    channel: str = "voice_sip"
+    agent_id: str = ""
+    llm_model: str = "unknown"
+
+    @field_validator("workflow_id", "org_id", mode="before")
+    @classmethod
+    def _coerce_to_str(cls, v):
+        return str(v) if not isinstance(v, str) else v
+
+
+class HangupRequest(BaseModel):
+    session_id: str
+    org_id: str
+    workflow_id: str
+    room_name: str = ""
+    duration_sec: float = 0
+    outcome: str = "completed"
+    channel: str = "voice_sip"
+
+    @field_validator("session_id", "workflow_id", "org_id", mode="before")
+    @classmethod
+    def _hangup_coerce_to_str(cls, v):
+        return str(v) if not isinstance(v, str) else v
+
+
+# ── Runtime Config ──────────────────────────────────────────────────────────
+
+
+@router.get("/workflows/{workflow_id}/runtime-config")
+async def get_runtime_config(
+    workflow_id: int,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Return full runtime config for a workflow — consumed by dograh-livekit."""
+    from api.db import db_client
+
+    # System/runtime path — use unscoped lookup
+    workflow = await db_client.get_workflow_by_id(workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    # Get published version via the released_definition relationship
+    published = workflow.released_definition or workflow.current_definition
+    if not published:
+        raise HTTPException(status_code=404, detail="No published version")
+
+    definition = published.workflow_json or {}
+    configs = published.workflow_configurations or {}
+
+    # Resolve effective model config (org config + workflow model_overrides),
+    # the same path Pipecat uses.
+    effective_llm = None
+    effective_stt = None
+    effective_tts = None
+    try:
+        from api.services.configuration.ai_model_configuration import (
+            get_effective_ai_model_configuration_for_workflow,
+        )
+        effective = await get_effective_ai_model_configuration_for_workflow(
+            organization_id=workflow.organization_id,
+            workflow_configurations=configs,
+        )
+        if effective.realtime:
+            effective_llm = effective.realtime
+        elif effective.llm:
+            effective_llm = effective.llm
+        effective_tts = effective.tts
+        effective_stt = effective.stt
+    except Exception:
+        pass
+
+    def _cfg(model_obj):
+        from pydantic import BaseModel
+        if model_obj is None:
+            return {}
+        if isinstance(model_obj, dict):
+            return model_obj
+        if isinstance(model_obj, BaseModel):
+            return model_obj.model_dump(exclude_none=True)
+        return {}
+
+    # Build a provider name the dograh-livekit worker understands. Realtime
+    # providers (google_realtime, openai_realtime) are exposed under llm_config
+    # so the worker's REALTIME_LLM_PROVIDERS picks the realtime path.
+    def _llm_payload(model_obj):
+        d = _cfg(model_obj)
+        if not d:
+            return d
+        provider = d.get("provider")
+        if provider in ("google", "gemini"):
+            d["provider"] = "google_realtime"
+        elif provider in ("openai",):
+            d["provider"] = "openai_realtime"
+        return d
+
+    # Resolve tools from UUIDs
+    tools = []
+    for node in definition.get("nodes", []):
+        node_data = node.get("data") or {}
+        tool_uuids = node_data.get("tool_uuids") or []
+        for uuid in tool_uuids:
+            try:
+                tool_def = await db_client.get_tool_definition(uuid, workflow.organization_id)
+                if tool_def:
+                    tools.append(tool_def)
+            except Exception:
+                pass
+
+    # Resolve KB refs
+    kb_refs = []
+    for node in definition.get("nodes", []):
+        node_data = node.get("data") or {}
+        doc_uuids = node_data.get("document_uuids") or []
+        kb_refs.extend(doc_uuids)
+    kb_refs = list(set(kb_refs))
+
+    # Extract system prompt from global node
+    system_prompt = ""
+    greeting_message = ""
+    for node in definition.get("nodes", []):
+        if node.get("type") == "globalNode":
+            system_prompt = (node.get("data") or {}).get("prompt", "")
+        if node.get("type") == "startCall":
+            greeting_message = (node.get("data") or {}).get("greeting", "")
+
+    return {
+        "workflow_id": workflow_id,
+        "org_id": str(workflow.organization_id),
+        "agent_id": str(workflow.id),
+        "agent_name": workflow.name,
+        "workflow_graph": definition,
+        "llm_config": _llm_payload(effective_llm),
+        "stt_config": _cfg(effective_stt),
+        "tts_config": _cfg(effective_tts),
+        "system_prompt": system_prompt or configs.get("system_prompt", ""),
+        "greeting_message": greeting_message,
+        "tools": tools,
+        "kb_refs": kb_refs,
+        "handoff_sip_number": "",
+        "orchestrator_mode": "agentos",
+        "stages": definition.get("nodes", []),
+    }
+
+
+# ── Knowledge Base ──────────────────────────────────────────────────────────
+
+
+@router.post("/kb/{org_id}/search")
+async def search_knowledge(
+    org_id: str,
+    body: SearchRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Search the knowledge base for an organization."""
+    from api.services.knowledge import search_documents
+
+    results = await search_documents(
+        int(org_id),
+        body.query,
+        document_ids=body.kb_refs or [],
+    )
+    return {"results": results}
+
+
+# ── Session Lifecycle ───────────────────────────────────────────────────────
+
+
+@router.post("/sessions", status_code=201)
+async def create_session(
+    body: CreateSessionRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Create a session record."""
+    from api.db import db_client
+
+    try:
+        session = await db_client.create_workflow_run(
+            name=f"LK-{body.room_name}",
+            workflow_id=int(body.workflow_id),
+            mode="livekit_sip",
+            user_id=None,
+            organization_id=int(body.org_id),
+            initial_context={
+                "channel": body.channel,
+                "room_name": body.room_name,
+            },
+        )
+    except Exception:
+        return {"id": f"session_{body.workflow_id}_{body.room_name}", "status": "active"}
+
+    return {"id": str(session.id) if hasattr(session, "id") else "unknown", "status": "active"}
+
+
+@router.put("/sessions/{session_id}")
+async def update_session(
+    session_id: str,
+    body: dict,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Update a session record."""
+    try:
+        from api.db import db_client
+        await db_client.update_workflow_run(
+            run_id=int(session_id),
+            gathered_context=body.get("context", {}),
+            is_completed=body.get("is_completed", False),
+        )
+    except Exception:
+        pass
+
+    return {"status": "updated"}
+
+
+@router.post("/sessions/hangup")
+async def hangup_session(
+    body: HangupRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Handle session hangup notification."""
+    try:
+        from api.db import db_client
+        await db_client.update_workflow_run(
+            run_id=int(body.session_id) if body.session_id.isdigit() else None,
+            is_completed=True,
+        )
+    except Exception:
+        pass
+
+    return {"status": "ok"}
+
+
+# ── ViciDial operations ─────────────────────────────────────────────────────
+
+
+class VicidialHangupRequest(BaseModel):
+    org_id: str
+    identity: dict
+
+
+class VicidialTransferRequest(BaseModel):
+    org_id: str
+    identity: dict
+    destination: str
+
+
+class VicidialUpdateLeadRequest(BaseModel):
+    org_id: str
+    identity: dict
+    fields: dict[str, str]
+
+
+@router.post("/vicidial/hangup")
+async def vicidial_hangup(
+    body: VicidialHangupRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Hangup the customer leg via ViciDial ra_call_control."""
+    adapter = await _get_vicidial_adapter(body.org_id)
+    if adapter is None:
+        return {"ok": False, "error": "ViciDial not configured for this org"}
+    result = await adapter.hangup(body.identity)
+    return {"ok": result.ok, "action": result.action, "message": result.message}
+
+
+@router.post("/vicidial/transfer")
+async def vicidial_transfer(
+    body: VicidialTransferRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Transfer the customer to an in-group via ViciDial ra_call_control."""
+    adapter = await _get_vicidial_adapter(body.org_id)
+    if adapter is None:
+        return {"ok": False, "error": "ViciDial not configured for this org"}
+    result = await adapter.transfer(body.identity, body.destination)
+    return {"ok": result.ok, "action": result.action, "message": result.message}
+
+
+@router.post("/vicidial/update-lead")
+async def vicidial_update_lead(
+    body: VicidialUpdateLeadRequest,
+    _token: None = Depends(_verify_internal_token),
+):
+    """Update ViciDial lead fields via non_agent_api."""
+    adapter = await _get_vicidial_adapter(body.org_id)
+    if adapter is None:
+        return {"ok": False, "error": "ViciDial not configured for this org"}
+    result = await adapter.update_fields(body.identity, body.fields)
+    return {"ok": result.ok, "action": result.action, "message": result.message}
+
+
+async def _get_vicidial_adapter(org_id: str):
+    """Build a VicidialAdapter from the org's ARI telephony config."""
+    from api.services.telephony.providers.ari.external_pbx import create_adapter
+    from api.db import db_client
+
+    try:
+        configs = await db_client.get_telephony_configs_for_org(int(org_id))
+    except Exception:
+        return None
+
+    for cfg in configs:
+        creds = cfg.credentials if hasattr(cfg, "credentials") else {}
+        external_pbx = creds.get("external_pbx")
+        if external_pbx and external_pbx.get("type") == "vicidial":
+            return create_adapter(external_pbx)
+    return None

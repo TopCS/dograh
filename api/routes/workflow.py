@@ -18,6 +18,7 @@ from api.db.workflow_template_client import WorkflowTemplateClient
 from api.enums import CallType, PostHogEvent, StorageBackend, WorkflowStatus
 from api.schemas.ai_model_configuration import OrganizationAIModelConfigurationV2
 from api.schemas.workflow import WorkflowRunResponseSchema
+from api.schemas.workflow_configurations import WorkflowConfigurationDefaults
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
 from api.services.configuration.ai_model_configuration import (
@@ -43,9 +44,15 @@ from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
 from api.services.reports import generate_workflow_report_csv
 from api.services.storage import storage_fs
+from api.services.workflow.configuration_policy import (
+    ExternalPBXConfigurationDisabledError,
+    WorkflowConfigurationNotFoundError,
+    apply_external_pbx_mapping_policy,
+)
 from api.services.workflow.dto import ReactFlowDTO, sanitize_workflow_definition
 from api.services.workflow.duplicate import duplicate_workflow
 from api.services.workflow.errors import ItemKind, WorkflowError
+from api.services.workflow.run_creation import prepare_workflow_run_inputs
 from api.services.workflow.run_usage_response import (
     format_public_cost_info,
     format_public_usage_info,
@@ -284,7 +291,10 @@ class UpdateWorkflowRequest(BaseModel):
     name: str | None = None
     workflow_definition: dict | None = None
     template_context_variables: dict | None = None
-    workflow_configurations: dict | None = None
+    # Typed so field constraints (e.g. the max_call_duration cap) are
+    # enforced by FastAPI; extra="allow" keeps passthrough keys like
+    # model_configuration_v2_override intact.
+    workflow_configurations: WorkflowConfigurationDefaults | None = None
 
 
 class WorkflowVersionResponse(BaseModel):
@@ -824,12 +834,34 @@ async def publish_workflow(
         },
     )
 
+    # Sync LiveKit dispatch rule in background (best-effort)
+    import asyncio
+    asyncio.create_task(_sync_livekit_after_publish(workflow_id, user.selected_organization_id))
+
     return {
         "id": published.id,
         "version_number": published.version_number,
         "status": published.status,
         "published_at": published.published_at,
     }
+
+
+# ── Background: sync LiveKit dispatch rule after publish ──────────────────
+
+
+async def _sync_livekit_after_publish(workflow_id: int, org_id: int):
+    """Background task — create/update LiveKit SIP dispatch rule."""
+    try:
+        from api.services.livekit_bridge.sync import sync_workflow_dispatch_rule
+        from api.db import db_client
+
+        mapping = await sync_workflow_dispatch_rule(workflow_id, org_id)
+        if mapping:
+            configs = await db_client.get_workflow_configurations(workflow_id) or {}
+            configs["livekit"] = mapping
+            await db_client.update_workflow(workflow_id, workflow_configurations=configs)
+    except Exception:
+        pass  # Non-blocking — dispatch rule sync is best-effort
 
 
 @router.post("/{workflow_id}/create-draft")
@@ -1039,7 +1071,23 @@ async def update_workflow(
 
         # Validate model overrides. v2 uses a complete workflow-level model
         # configuration; legacy v1 uses partial service overlays.
-        workflow_configurations = request.workflow_configurations
+        # exclude_unset keeps stored configs sparse: keys the request didn't
+        # send stay absent so runtime defaults keep applying to them.
+        workflow_configurations = (
+            request.workflow_configurations.model_dump(exclude_unset=True)
+            if request.workflow_configurations is not None
+            else None
+        )
+        try:
+            workflow_configurations = await apply_external_pbx_mapping_policy(
+                workflow_configurations,
+                workflow_id=workflow_id,
+                organization_id=user.selected_organization_id,
+            )
+        except WorkflowConfigurationNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ExternalPBXConfigurationDisabledError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         if workflow_configurations and workflow_configurations.get(
             WORKFLOW_MODEL_CONFIGURATION_V2_OVERRIDE_KEY
         ):
@@ -1080,7 +1128,6 @@ async def update_workflow(
                 )
                 if existing_v2_override_config is None:
                     resolved_config = await get_resolved_ai_model_configuration(
-                        user_id=user.id,
                         organization_id=user.selected_organization_id,
                     )
                     v2_override = merge_ai_model_configuration_v2_secrets(
@@ -1123,7 +1170,6 @@ async def update_workflow(
                 existing_configs,
             )
             resolved_config = await get_resolved_ai_model_configuration(
-                user_id=user.id,
                 organization_id=user.selected_organization_id,
             )
             effective_config = resolved_config.effective
@@ -1294,13 +1340,27 @@ async def create_workflow_run(
         request: The create workflow run request
         user: The user to create the workflow run for
     """
+    workflow = await db_client.get_workflow(
+        workflow_id, organization_id=user.selected_organization_id
+    )
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    run_inputs = await prepare_workflow_run_inputs(
+        db_client,
+        workflow,
+        use_draft=True,
+        include_template_context=True,
+    )
+
     run = await db_client.create_workflow_run(
         request.name,
         workflow_id,
         request.mode,
         user.id,
-        use_draft=True,
         organization_id=user.selected_organization_id,
+        definition_id=run_inputs.definition_id,
+        initial_context=run_inputs.initial_context,
     )
     return {
         "id": run.id,
@@ -1384,8 +1444,8 @@ class WorkflowRunsResponse(BaseModel):
 @router.get("/{workflow_id}/runs")
 async def get_workflow_runs(
     workflow_id: int,
-    page: int = 1,
-    limit: int = 50,
+    page: int = Query(1, ge=1, description="Page number (starts from 1)"),
+    limit: int = Query(50, ge=1, le=100, description="Number of items per page"),
     filters: Optional[str] = Query(None, description="JSON-encoded filter criteria"),
     sort_by: Optional[str] = Query(
         None, description="Field to sort by (e.g., 'duration', 'created_at')"

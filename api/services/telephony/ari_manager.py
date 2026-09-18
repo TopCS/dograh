@@ -26,12 +26,19 @@ from loguru import logger
 from api.constants import REDIS_URL
 from api.db import db_client
 from api.enums import CallType, WorkflowRunMode
+from api.services.call_concurrency import (
+    CallConcurrencyLimitError,
+    call_concurrency,
+)
+from api.services.organization_preferences import external_pbx_integrations_enabled
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.providers.ari.external_pbx import create_adapter
 from api.services.telephony.transfer_event_protocol import (
     TransferEvent,
     TransferEventType,
 )
+from api.services.workflow.run_creation import prepare_workflow_run_inputs
 
 # Redis key pattern and TTL for channel-to-run mapping
 _CHANNEL_KEY_PREFIX = "ari:channel:"
@@ -52,6 +59,7 @@ class ARIConnection:
         app_name: str,
         app_password: str,
         ws_client_name: str = "",
+        external_pbx_config: Optional[dict] = None,
     ):
         self.organization_id = organization_id
         self.telephony_configuration_id = telephony_configuration_id
@@ -59,6 +67,8 @@ class ARIConnection:
         self.app_name = app_name
         self.app_password = app_password
         self.ws_client_name = ws_client_name
+        self.external_pbx_config = external_pbx_config
+        self.external_pbx_adapter = create_adapter(external_pbx_config)
 
         self._ws: Optional[websockets.ClientConnection] = None
         self._task: Optional[asyncio.Task] = None
@@ -119,10 +129,19 @@ class ARIConnection:
         r = await self._get_redis()
         return await r.exists(f"{_EXT_CHANNEL_KEY_PREFIX}{channel_id}") > 0
 
-    async def _delete_ext_channel(self, channel_id: str):
+    async def _delete_ext_channel(self, channel_id: Optional[str]):
         """Remove the external media channel marker."""
+        if not channel_id:
+            return
         r = await self._get_redis()
         await r.delete(f"{_EXT_CHANNEL_KEY_PREFIX}{channel_id}")
+
+    async def _delete_transfer_channel_mapping(self, channel_id: Optional[str]):
+        """Remove transfer destination channel correlation marker."""
+        if not channel_id:
+            return
+        r = await self._get_redis()
+        await r.delete(f"ari:transfer_channel:{channel_id}")
 
     async def _set_pending_bridge(
         self,
@@ -274,7 +293,7 @@ class ARIConnection:
         channel_state = channel.get("state", "unknown")
 
         # Log all events for each channel
-        logger.debug(
+        logger.trace(
             f"[ARI EVENT org={self.organization_id}] {event_type}: channel={channel_id}, state={channel_state}"
         )
 
@@ -340,19 +359,18 @@ class ARIConnection:
 
                 workflow_run_id = args_dict.get("workflow_run_id")
                 workflow_id = args_dict.get("workflow_id")
-                user_id = args_dict.get("user_id")
 
-                if not workflow_run_id or not workflow_id or not user_id:
+                if not workflow_run_id or not workflow_id:
                     logger.warning(
                         f"[ARI org={self.organization_id}] StasisStart missing required args: "
-                        f"workflow_run_id={workflow_run_id}, workflow_id={workflow_id}, user_id={user_id}"
+                        f"workflow_run_id={workflow_run_id}, workflow_id={workflow_id}"
                     )
                     return
 
                 # Start pipeline connection in background task
                 asyncio.create_task(
                     self._handle_stasis_start(
-                        channel_id, channel_state, workflow_run_id, workflow_id, user_id
+                        channel_id, channel_state, workflow_run_id, workflow_id
                     )
                 )
 
@@ -401,7 +419,7 @@ class ARIConnection:
             )
 
         else:
-            logger.debug(
+            logger.trace(
                 f"[ARI org={self.organization_id}] Event: {event_type} "
                 f"channel={channel_id}"
             )
@@ -416,9 +434,9 @@ class ARIConnection:
             async with session.request(method, url, auth=auth, **kwargs) as response:
                 response_text = await response.text()
                 if response.status not in (200, 201, 204):
-                    logger.error(
+                    logger.warning(
                         f"[ARI org={self.organization_id}] REST API error: "
-                        f"{method} {path} -> {response.status}: {response_text}"
+                        f"{method} {path} {kwargs} -> {response.status}: {response_text}"
                     )
                     return {}
                 if response_text:
@@ -432,10 +450,44 @@ class ARIConnection:
         logger.info(f"[ARI org={self.organization_id}] Answered channel {channel_id}")
         return True
 
+    async def _get_channel_var(self, channel_id: str, variable: str) -> str:
+        """Read a channel variable/function via ARI. Returns '' if unset."""
+        result = await self._ari_request(
+            "GET", f"/channels/{channel_id}/variable", params={"variable": variable}
+        )
+        return (result or {}).get("value", "") or ""
+
+    async def _capture_external_pbx_call(
+        self, channel_id: str, channel_name: str = ""
+    ) -> Optional[dict]:
+        """Capture adapter-defined identity from inbound SIP headers."""
+        if self.external_pbx_adapter is None:
+            return None
+        # PJSIP_HEADER() only works on a PJSIP channel; on any other technology
+        # (Local, WebSocket, etc.) Asterisk returns a 500 ("This function
+        # requires a PJSIP channel"). Non-PJSIP legs carry no SIP headers to
+        # capture anyway, so skip the reads quietly instead of spamming errors.
+        if not channel_name.startswith("PJSIP/"):
+            logger.debug(
+                f"[ARI org={self.organization_id}] Skipping external PBX capture "
+                f"for non-PJSIP channel {channel_id} ({channel_name or 'unknown'})"
+            )
+            return None
+
+        async def read_header(name: str) -> str:
+            return await self._get_channel_var(channel_id, f"PJSIP_HEADER(read,{name})")
+
+        identity = await self.external_pbx_adapter.capture_call_identity(read_header)
+        if identity:
+            logger.info(
+                f"[ARI org={self.organization_id}] Captured "
+                f"{self.external_pbx_adapter.type} call identity for channel {channel_id} identity: {identity}"
+            )
+        return identity
+
     async def _create_external_media(
         self,
         workflow_id: str,
-        user_id: str,
         workflow_run_id: str,
         channel_id: Optional[str] = None,
     ) -> str:
@@ -451,10 +503,10 @@ class ARIConnection:
         the POST and avoid racing against the StasisStart event.
         """
         # v() appends URI query params to the websocket_client.conf URL
-        # e.g. wss://api.dograh.com/ws/ari?workflow_id=1&user_id=2&workflow_run_id=3
+        # e.g. wss://api.dograh.com/ws/ari?workflow_id=1&organization_id=2&workflow_run_id=3
         transport_data = (
             f"v(workflow_id={workflow_id},"
-            f"user_id={user_id},"
+            f"organization_id={self.organization_id},"
             f"workflow_run_id={workflow_run_id})"
         )
 
@@ -518,6 +570,8 @@ class ARIConnection:
         channel = event.get("channel", {})
         caller_number = channel.get("caller", {}).get("number", "unknown")
         called_number = channel.get("dialplan", {}).get("exten", "unknown")
+        concurrency_slot = None
+        workflow_run = None
 
         try:
             # 1. Resolve the workflow from the called extension via the
@@ -564,8 +618,27 @@ class ARIConnection:
 
             user_id = workflow.user_id
 
+            try:
+                concurrency_slot = await call_concurrency.acquire_org_slot(
+                    self.organization_id,
+                    source="ari_inbound",
+                    timeout=0,
+                )
+            except CallConcurrencyLimitError:
+                logger.warning(
+                    f"[ARI org={self.organization_id}] Concurrent call limit "
+                    f"reached; hanging up inbound channel {channel_id}"
+                )
+                await self._delete_channel(channel_id)
+                return
+
             # 3. Create workflow run
             call_id = channel_id
+            run_inputs = await prepare_workflow_run_inputs(db_client, workflow)
+            # Capture the configured external PBX identity from SIP headers.
+            external_pbx_call = await self._capture_external_pbx_call(
+                channel_id, channel.get("name", "")
+            )
             workflow_run = await db_client.create_workflow_run(
                 name=f"ARI Inbound {caller_number}",
                 workflow_id=inbound_workflow_id,
@@ -578,11 +651,15 @@ class ARIConnection:
                     "direction": "inbound",
                     "provider": "ari",
                     "telephony_configuration_id": self.telephony_configuration_id,
+                    "external_pbx_call": external_pbx_call,
                 },
                 gathered_context={
                     "call_id": call_id,
                 },
+                organization_id=self.organization_id,
+                definition_id=run_inputs.definition_id,
             )
+            await call_concurrency.bind_workflow_run(concurrency_slot, workflow_run.id)
 
             logger.info(
                 f"[ARI org={self.organization_id}] Created inbound workflow run "
@@ -594,6 +671,7 @@ class ARIConnection:
             # store the MPS correlation id before the pipeline starts.
             quota_result = await authorize_workflow_run_start(
                 workflow_id=inbound_workflow_id,
+                organization_id=self.organization_id,
                 workflow_run_id=workflow_run.id,
             )
             if not quota_result.has_quota:
@@ -601,6 +679,7 @@ class ARIConnection:
                     f"[ARI org={self.organization_id}] Quota exceeded for user {user_id} "
                     f"— hanging up inbound call {channel_id}"
                 )
+                await call_concurrency.release_workflow_run_slot(workflow_run.id)
                 await self._delete_channel(channel_id)
                 return
 
@@ -613,9 +692,12 @@ class ARIConnection:
                 channel_state,
                 str(workflow_run.id),
                 str(inbound_workflow_id),
-                str(user_id),
             )
         except Exception as e:
+            if workflow_run:
+                await call_concurrency.release_workflow_run_slot(workflow_run.id)
+            elif concurrency_slot:
+                await call_concurrency.release_slot(concurrency_slot)
             logger.error(
                 f"[ARI org={self.organization_id}] Error handling inbound StasisStart "
                 f"for channel {channel_id}: {e}"
@@ -631,7 +713,6 @@ class ARIConnection:
         channel_state: str,
         workflow_run_id: str,
         workflow_id: str,
-        user_id: str,
     ):
         """Set up external media for a caller channel that has entered Stasis.
 
@@ -675,7 +756,6 @@ class ARIConnection:
             # 3. Create the ext media channel with the id we just registered.
             created_id = await self._create_external_media(
                 workflow_id,
-                user_id,
                 workflow_run_id,
                 channel_id=ext_channel_id,
             )
@@ -751,6 +831,14 @@ class ARIConnection:
         the bridge and both channels — like endConferenceOnExit.
         """
         try:
+            # Release the org concurrency slot. Normally the pipeline's own
+            # teardown does this when the ext media websocket closes, but if
+            # the pipeline never started (caller hung up before external
+            # media connected, ext media creation failed, ...) this is the
+            # only cleanup that runs before the Redis stale timeout. No-op
+            # when the slot was already released.
+            await call_concurrency.unregister_active_call(int(workflow_run_id))
+
             workflow_run = await db_client.get_workflow_run_by_id(int(workflow_run_id))
             if not workflow_run or not workflow_run.gathered_context:
                 logger.warning(
@@ -766,6 +854,11 @@ class ARIConnection:
             ext_channel_id = ctx.get("ext_channel_id")
             bridge_id = ctx.get("bridge_id")
             transfer_state = ctx.get("transfer_state")
+            transfer_bridge_id = ctx.get("transfer_bridge_id") or bridge_id
+            transfer_caller_channel_id = (
+                ctx.get("transfer_caller_channel_id") or call_id
+            )
+            transfer_destination_channel_id = ctx.get("transfer_destination_channel_id")
 
             # Check if this is a call transfer scenario external channel. Skip full teardown if
             # transfer is in progress and this is the external media channel
@@ -796,6 +889,64 @@ class ARIConnection:
                 )
                 return
 
+            if (
+                transfer_state == "complete"
+                and transfer_bridge_id
+                and transfer_caller_channel_id
+                and transfer_destination_channel_id
+                and channel_id
+                in (
+                    transfer_caller_channel_id,
+                    transfer_destination_channel_id,
+                )
+            ):
+                peer_channel_id = (
+                    transfer_destination_channel_id
+                    if channel_id == transfer_caller_channel_id
+                    else transfer_caller_channel_id
+                )
+                logger.info(
+                    f"[ARI org={self.organization_id}] Completed transfer participant "
+                    f"{channel_id} left Stasis; tearing down peer {peer_channel_id} "
+                    f"and bridge {transfer_bridge_id}"
+                )
+
+                # Mark terminal state before issuing ARI deletes so duplicate
+                # StasisEnd events run through the idempotent normal cleanup path.
+                ctx["transfer_state"] = "terminated"
+                await db_client.update_workflow_run(
+                    run_id=int(workflow_run_id), gathered_context=ctx
+                )
+
+                await self._delete_bridge(transfer_bridge_id)
+                if peer_channel_id and peer_channel_id != channel_id:
+                    await self._delete_channel(peer_channel_id)
+
+                keys_to_delete = [
+                    cid
+                    for cid in (
+                        transfer_caller_channel_id,
+                        transfer_destination_channel_id,
+                        ext_channel_id,
+                        channel_id,
+                    )
+                    if cid
+                ]
+                if keys_to_delete:
+                    await self._delete_channel_run(*keys_to_delete)
+
+                await self._delete_ext_channel(ext_channel_id)
+                await self._delete_transfer_channel_mapping(
+                    transfer_destination_channel_id
+                )
+
+                logger.info(
+                    f"[ARI org={self.organization_id}] Completed transfer teardown "
+                    f"finished for channel={channel_id}, peer={peer_channel_id}, "
+                    f"bridge={transfer_bridge_id}"
+                )
+                return
+
             # Normal full teardown for non-transfer scenarios (transfer_state is None or not in-progress)
             # Delete the bridge first (removes channels from it)
             if bridge_id:
@@ -815,6 +966,7 @@ class ARIConnection:
 
             # Clean up the Redis marker for external channel
             await self._delete_ext_channel(ext_channel_id)
+            await self._delete_transfer_channel_mapping(transfer_destination_channel_id)
 
             logger.info(
                 f"[ARI org={self.organization_id}] StasisEnd full teardown for "
@@ -1047,6 +1199,7 @@ class ARIManager:
             app_name = config["app_name"]
             app_password = config["app_password"]
             ws_client_name = config["ws_client_name"]
+            external_pbx_config = config.get("external_pbx")
 
             conn = ARIConnection(
                 org_id,
@@ -1055,6 +1208,7 @@ class ARIManager:
                 app_name,
                 app_password,
                 ws_client_name,
+                external_pbx_config,
             )
             key = conn.connection_key
 
@@ -1079,6 +1233,7 @@ class ARIManager:
                     or existing.app_name != app_name
                     or existing.app_password != app_password
                     or existing.ws_client_name != ws_client_name
+                    or existing.external_pbx_config != external_pbx_config
                 ):
                     logger.info(
                         f"[ARI Manager] Config {telephony_configuration_id} "
@@ -1116,6 +1271,11 @@ class ARIManager:
             app_name = credentials.get("app_name")
             app_password = credentials.get("app_password")
             ws_client_name = credentials.get("ws_client_name", "")
+            external_pbx = credentials.get("external_pbx")
+            if external_pbx and not await external_pbx_integrations_enabled(
+                row.organization_id
+            ):
+                external_pbx = None
 
             if not all([ari_endpoint, app_name, app_password]):
                 logger.warning(
@@ -1138,6 +1298,7 @@ class ARIManager:
                     "app_name": app_name,
                     "app_password": app_password,
                     "ws_client_name": ws_client_name,
+                    "external_pbx": external_pbx,
                 }
             )
 

@@ -24,12 +24,17 @@ from api.db import db_client
 from api.enums import ToolCategory, WorkflowRunMode
 from api.services.pipecat.audio_playback import play_audio, play_audio_loop
 from api.services.telephony.call_transfer_manager import get_call_transfer_manager
+from api.services.telephony.external_pbx import resolve_external_pbx_field_mappings
 from api.services.telephony.factory import get_telephony_provider_for_run
 from api.services.telephony.transfer_event_protocol import TransferContext
 from api.services.workflow.tools.calculator import get_calculator_tools, safe_calculator
 from api.services.workflow.tools.custom_tool import (
     execute_http_tool,
     tool_to_function_schema,
+)
+from api.services.workflow.tools.transfer_resolver import (
+    TransferResolutionError,
+    resolve_transfer_config,
 )
 from api.utils.template_renderer import render_template
 
@@ -284,10 +289,19 @@ class CustomToolManager:
 
                 # Create and register the handler
                 handler, timeout_secs = self._create_handler(tool, function_name)
+                # End-call and transfer-call tools are workflow-control
+                # boundaries even though they do not necessarily select another
+                # graph node. Give them the same ordering guarantees as an
+                # explicit node-transition function.
+                is_node_transition = tool.category in {
+                    ToolCategory.END_CALL.value,
+                    ToolCategory.TRANSFER_CALL.value,
+                }
                 self._engine.llm.register_function(
                     function_name,
                     handler,
                     timeout_secs=timeout_secs,
+                    is_node_transition=is_node_transition,
                 )
 
                 logger.debug(
@@ -313,7 +327,7 @@ class CustomToolManager:
         if tool.category == ToolCategory.END_CALL.value:
             handler = self._create_end_call_handler(tool, function_name)
         elif tool.category == ToolCategory.TRANSFER_CALL.value:
-            timeout_secs = 120.0
+            timeout_secs = self._transfer_handler_timeout_secs(tool)
             handler = self._create_transfer_call_handler(tool, function_name)
         else:
             timeout_ms = ((tool.definition or {}).get("config", {}) or {}).get(
@@ -323,6 +337,27 @@ class CustomToolManager:
             handler = self._create_http_tool_handler(tool, function_name)
 
         return handler, timeout_secs
+
+    def _transfer_handler_timeout_secs(self, tool: Any) -> float:
+        config = (tool.definition or {}).get("config", {}) or {}
+        try:
+            transfer_timeout = int(config.get("timeout", 30))
+        except (TypeError, ValueError):
+            transfer_timeout = 30
+        transfer_timeout = min(max(transfer_timeout, 5), 120)
+
+        resolver_timeout = 0.0
+        resolver = config.get("resolver")
+        if config.get("destination_source", "static") == "dynamic" and isinstance(
+            resolver, dict
+        ):
+            try:
+                resolver_timeout = float(resolver.get("timeout_ms", 3000)) / 1000.0
+            except (TypeError, ValueError):
+                resolver_timeout = 3.0
+            resolver_timeout = min(max(resolver_timeout, 0.5), 5.0)
+
+        return float(transfer_timeout) + resolver_timeout + 15.0
 
     def _register_calculator_handler(self) -> None:
         """Register the built-in calculator function with the LLM."""
@@ -520,15 +555,16 @@ class CustomToolManager:
             function_call_params: FunctionCallParams,
         ) -> None:
             logger.info(f"Transfer Call Tool EXECUTED: {function_name}")
-            logger.info(f"Arguments: {function_call_params.arguments}")
+            logger.info(
+                "Transfer call arguments received "
+                f"argument_keys={list((function_call_params.arguments or {}).keys())}"
+            )
 
             try:
                 # Get the transfer call configuration
                 config = tool.definition.get("config", {})
                 destination = config.get("destination", "")
-                timeout_seconds = config.get(
-                    "timeout", 30
-                )  # Default 30 seconds if not configured
+                timeout_seconds = config.get("timeout", 30)
 
                 # Check if this is a WebRTC call - transfers are not supported
                 workflow_run = await db_client.get_workflow_run_by_id(
@@ -560,11 +596,88 @@ class CustomToolManager:
                     )
                     return
 
-                destination = _render_transfer_destination(
-                    destination,
-                    self._engine._call_context_vars,
-                    self._engine._gathered_context,
-                )
+                # Get organization ID for resolver/provider configuration
+                organization_id = await self.get_organization_id()
+                if not organization_id:
+                    validation_error_result = {
+                        "status": "failed",
+                        "message": "I'm sorry, there's an issue with this call transfer. Please contact support.",
+                        "action": "transfer_failed",
+                        "reason": "no_organization_id",
+                    }
+                    await self._handle_transfer_result(
+                        validation_error_result, function_call_params, properties
+                    )
+                    return
+
+                external_pbx_call = (
+                    getattr(workflow_run, "initial_context", None) or {}
+                ).get("external_pbx_call")
+                # Compatibility for calls that started before the migration.
+                external_pbx_call = external_pbx_call or (
+                    getattr(workflow_run, "initial_context", None) or {}
+                ).get("upstream_pbx")
+                if external_pbx_call:
+                    # Context-to-in-group and lead-field mappings must see the
+                    # final conversation-derived values.
+                    await self._engine.perform_final_variable_extraction()
+
+                resolver = config.get("resolver") if isinstance(config, dict) else None
+                is_dynamic_transfer = config.get(
+                    "destination_source", "static"
+                ) == "dynamic" and isinstance(resolver, dict)
+
+                if is_dynamic_transfer and resolver.get("wait_message"):
+                    await self._engine.task.queue_frame(
+                        TTSSpeakFrame(
+                            str(resolver["wait_message"]),
+                            append_to_context=False,
+                            persist_to_logs=True,
+                        )
+                    )
+
+                try:
+                    resolved_transfer = await resolve_transfer_config(
+                        tool=tool,
+                        config=config,
+                        arguments=function_call_params.arguments or {},
+                        call_context_vars=self._engine._call_context_vars,
+                        gathered_context_vars=self._engine._gathered_context,
+                        organization_id=organization_id,
+                        workflow_run_id=self._engine._workflow_run_id,
+                    )
+                    destination = resolved_transfer.destination
+                    timeout_seconds = resolved_transfer.timeout_seconds
+                except TransferResolutionError as e:
+                    validation_error_result = {
+                        "status": "failed",
+                        "message": "I'm sorry, but I couldn't find a valid destination for this transfer.",
+                        "action": "transfer_failed",
+                        "reason": e.reason,
+                    }
+                    await self._handle_transfer_result(
+                        validation_error_result, function_call_params, properties
+                    )
+                    return
+
+                if (
+                    resolved_transfer.source == "context_mapping"
+                    and not external_pbx_call
+                ):
+                    await self._handle_transfer_result(
+                        {
+                            "status": "failed",
+                            "message": (
+                                "This call did not arrive through the configured "
+                                "external PBX."
+                            ),
+                            "action": "transfer_failed",
+                            "reason": "external_pbx_call_required",
+                        },
+                        function_call_params,
+                        properties,
+                    )
+                    return
 
                 # Validate destination phone number
                 if not destination or not destination.strip():
@@ -579,27 +692,66 @@ class CustomToolManager:
                     )
                     return
 
-                played = await self._play_config_message(config)
-                if played:
-                    self._engine._queued_speech_mute_state = "waiting"
-
-                # Get organization ID for provider configuration
-                organization_id = await self.get_organization_id()
-                if not organization_id:
-                    validation_error_result = {
-                        "status": "failed",
-                        "message": "I'm sorry, there's an issue with this call transfer. Please contact support.",
-                        "action": "transfer_failed",
-                        "reason": "no_organization_id",
-                    }
-                    await self._handle_transfer_result(
-                        validation_error_result, function_call_params, properties
-                    )
-                    return
-
                 provider = await get_telephony_provider_for_run(
                     workflow_run, organization_id
                 )
+
+                if resolved_transfer.message:
+                    await self._engine.task.queue_frame(
+                        TTSSpeakFrame(
+                            resolved_transfer.message,
+                            append_to_context=False,
+                            persist_to_logs=True,
+                        )
+                    )
+                else:
+                    await self._play_config_message(config)
+
+                if external_pbx_call:
+                    workflow_configurations = (
+                        await db_client.get_workflow_run_configurations(
+                            self._engine._workflow_run_id, organization_id
+                        )
+                    )
+                    field_updates = resolve_external_pbx_field_mappings(
+                        self._engine._gathered_context,
+                        workflow_configurations.get("external_pbx_field_mappings", []),
+                    )
+                    external_result = await provider.transfer_external_pbx_call(
+                        identity=external_pbx_call,
+                        destination=destination,
+                        field_updates=field_updates,
+                    )
+                    if external_result is not None:
+                        if external_result.get("status") == "success":
+                            self._engine._gathered_context[
+                                "external_pbx_transferred"
+                            ] = True
+                            await db_client.update_workflow_run(
+                                run_id=self._engine._workflow_run_id,
+                                gathered_context={"external_pbx_transferred": True},
+                            )
+                            await function_call_params.result_callback(
+                                external_result, properties=properties
+                            )
+                            # Let VICIdial redirect the customer out of its
+                            # conference before Dograh tears down the local leg.
+                            await asyncio.sleep(4)
+                            await self._engine.end_call_with_reason(
+                                EndTaskReason.END_CALL_TOOL_REASON.value,
+                                abort_immediately=True,
+                            )
+                        else:
+                            await self._handle_transfer_result(
+                                {
+                                    **external_result,
+                                    "action": "transfer_failed",
+                                },
+                                function_call_params,
+                                properties,
+                            )
+                        return
+
                 if not provider.supports_transfers() or not provider.validate_config():
                     validation_error_result = {
                         "status": "failed",
@@ -639,6 +791,15 @@ class CustomToolManager:
 
                 # Initiate transfer via provider with inline TwiML
                 try:
+                    masked_destination = (
+                        f"***{destination[-4:]}" if len(destination) > 4 else "***"
+                    )
+                    logger.info(
+                        "Transfer provider call starting "
+                        f"source={resolved_transfer.source} "
+                        f"resolution_id={resolved_transfer.resolution_id or ''} "
+                        f"destination={masked_destination} timeout={timeout_seconds}"
+                    )
                     transfer_result = await provider.transfer_call(
                         destination=destination,
                         transfer_id=transfer_id,
@@ -669,7 +830,9 @@ class CustomToolManager:
 
                 # Wait for status callback completion using Redis pub/sub
                 logger.info(
-                    f"Transfer call initiated for {destination} (transfer_id={transfer_id}), waiting for completion..."
+                    "Transfer call initiated "
+                    f"destination={masked_destination} transfer_id={transfer_id}, "
+                    "waiting for completion..."
                 )
 
                 # Start hold music during transfer waiting period

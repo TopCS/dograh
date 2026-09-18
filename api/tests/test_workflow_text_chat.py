@@ -5,8 +5,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pipecat.processors.aggregators.llm_context import LLMSpecificMessage
 
-from api.db.models import OrganizationModel, UserModel
+from api.db.models import OrganizationModel, UserModel, organization_users_association
+from api.enums import OrganizationConfigurationKey
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
+from api.services.configuration.ai_model_configuration import (
+    convert_legacy_ai_model_configuration_to_v2,
+)
 from api.services.workflow.text_chat_runner import (
     _deserialize_text_chat_checkpoint_messages,
     _serialize_text_chat_checkpoint_messages,
@@ -84,10 +88,23 @@ async def _create_user_and_workflow(
     )
     async_session.add(user)
     await async_session.flush()
+    await async_session.execute(
+        organization_users_association.insert().values(
+            user_id=user.id,
+            organization_id=org.id,
+        )
+    )
 
-    await db_session.update_user_configuration(
-        user_id=user.id,
-        configuration=EffectiveAIModelConfiguration.model_validate(USER_CONFIGURATION),
+    user_configuration = EffectiveAIModelConfiguration.model_validate(
+        USER_CONFIGURATION
+    )
+    await db_session.upsert_configuration(
+        org.id,
+        OrganizationConfigurationKey.MODEL_CONFIGURATION_V2.value,
+        convert_legacy_ai_model_configuration_to_v2(user_configuration).model_dump(
+            mode="json",
+            exclude_none=True,
+        ),
     )
 
     workflow = await db_session.create_workflow(
@@ -181,6 +198,11 @@ async def test_text_chat_session_creation_executes_initial_assistant_turn(
         workflow_definition=workflow_definition,
         suffix="bootstrap",
     )
+    draft = await db_session.save_workflow_draft(
+        workflow_id=workflow.id,
+        workflow_definition=workflow_definition,
+        template_context_variables={"name": "draft", "draft_only": "kept"},
+    )
 
     llm = MockLLMService(
         mock_steps=[
@@ -202,7 +224,7 @@ async def test_text_chat_session_creation_executes_initial_assistant_turn(
         ):
             create_response = await client.post(
                 f"/api/v1/workflow/{workflow.id}/text-chat/sessions",
-                json={},
+                json={"initial_context": {"name": "explicit"}},
             )
             assert create_response.status_code == 200
             created = create_response.json()
@@ -225,6 +247,11 @@ async def test_text_chat_session_creation_executes_initial_assistant_turn(
     assert "Start" in (created["gathered_context"] or {}).get("nodes_visited", [])
     workflow_run = await db_session.get_workflow_run_by_id(created["workflow_run_id"])
     assert workflow_run is not None
+    assert workflow_run.definition_id == draft.id
+    assert workflow_run.initial_context == {
+        "name": "explicit",
+        "draft_only": "kept",
+    }
     assert "call_duration_seconds" in workflow_run.usage_info
     assert _log_texts(run_payload["logs"], "rtf-bot-text") == [
         "Hello from the workflow tester."
@@ -1079,10 +1106,23 @@ async def test_text_chat_session_creation_requires_selected_org_scope(
     )
     async_session.add(user)
     await async_session.flush()
+    await async_session.execute(
+        organization_users_association.insert().values(
+            user_id=user.id,
+            organization_id=org_a.id,
+        )
+    )
 
-    await db_session.update_user_configuration(
-        user_id=user.id,
-        configuration=EffectiveAIModelConfiguration.model_validate(USER_CONFIGURATION),
+    user_configuration = EffectiveAIModelConfiguration.model_validate(
+        USER_CONFIGURATION
+    )
+    await db_session.upsert_configuration(
+        org_a.id,
+        OrganizationConfigurationKey.MODEL_CONFIGURATION_V2.value,
+        convert_legacy_ai_model_configuration_to_v2(user_configuration).model_dump(
+            mode="json",
+            exclude_none=True,
+        ),
     )
 
     workflow = await db_session.create_workflow(

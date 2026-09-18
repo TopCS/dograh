@@ -141,13 +141,14 @@ services:
       - app-network
 
   api:
-    image: ${REGISTRY:-sativoiceai}/sativoice-api:latest
-    volumes:
-      - shared-tmp:/tmp
+    image: ${REGISTRY:-dograhai}/dograh-api:latest
     environment:
       # Core application config
       ENVIRONMENT: "${ENVIRONMENT:-local}"
       LOG_LEVEL: "INFO"
+
+      # Set to "false" in .env to disable public signup (invite-only installs).
+      ENABLE_SIGNUP: "${ENABLE_SIGNUP:-true}"
 
       # Public origin for this deployment. The API derives BACKEND_API_ENDPOINT,
       # MINIO_PUBLIC_ENDPOINT and TURN_HOST from PUBLIC_BASE_URL / PUBLIC_HOST when
@@ -260,7 +261,7 @@ services:
       - app-network
 
   ui:
-    image: ${REGISTRY:-sativoiceai}/sativoice-ui:latest
+    image: ${REGISTRY:-dograhai}/dograh-ui:latest
     environment:
       # Bind the Next.js standalone server to all interfaces
       HOSTNAME: "0.0.0.0"
@@ -329,8 +330,6 @@ volumes:
   postgres_data:
   redis_data:
   minio-data:
-    driver: local
-  shared-tmp:
     driver: local
   nginx-generated:
     driver: local
