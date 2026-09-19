@@ -110,3 +110,21 @@ All configurations load `api/.env` (test configs use `api/.env.test`) and set `j
 Bug reports and feature ideas go through [GitHub Issues](https://github.com/dograh-hq/dograh/issues) and [Ideas](https://github.com/orgs/dograh-hq/discussions/categories/ideas). Issues tagged `good first issue` are a good place to start. For questions while you're working, use the [Dograh Community Slack](https://join.slack.com/t/dograh-community/shared_invite/zt-3zjb5vwvl-j7hRz3_F1SOn5cH~jm5f5g).
 
 Deploying your own build instead of contributing upstream? See [Deployments](/deployment/introduction) instead.
+
+## Troubleshooting
+
+### `extension "vector" is not available` — missing pgvector
+
+Dograh stores knowledge-base embeddings in pgvector `vector` columns, and the migration `dc33eef8dabe_add_document_tables` enables the extension the first time it runs. If your local PostgreSQL server does not ship pgvector, `alembic upgrade head` — and the API test session, which runs migrations on `test_db` at startup — fails during setup:
+
+```text
+sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedFile) could not open extension control file "vector.control": No such file or directory
+```
+
+This is a server-side install issue, not a code or Python-dependency problem. Follow the [pgvector installation guide](/contribution/install-pgvector) to add the extension for your PostgreSQL version (Homebrew, apt, Alpine, Docker, or a source build), then re-run the tests — the migration enables `vector` on `test_db` automatically, so no `DATABASE_URL` change is needed.
+
+**Need an immediate workaround?** Point `DATABASE_URL` at any Postgres that already has pgvector — for example the `postgres` service in `docker-compose-local.yaml` (image `pgvector/pgvector:pg17`, port 5432, the same image CI uses) or any local `pgvector/pgvector` container:
+
+```bash
+export DATABASE_URL='postgresql+asyncpg://postgres:postgres@localhost:5432/test_db'
+```

@@ -142,7 +142,8 @@
             "group": "Contribution",
             "pages": [
               "contribution/setup",
-              "contribution/reference"
+              "contribution/reference",
+              "contribution/install-pgvector"
             ]
           },
           {

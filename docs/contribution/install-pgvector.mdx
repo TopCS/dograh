@@ -1,0 +1,203 @@
+---
+title: Installing pgvector for local development
+description: How to add the pgvector extension to a local PostgreSQL 16 server so the API test suite and Alembic migrations pass without a DATABASE_URL override.
+---
+
+Dograh stores knowledge-base embeddings in pgvector `vector` columns, and the Alembic migration `api/alembic/versions/dc33eef8dabe_add_document_tables.py` enables the extension whenever it runs. The API test session (`api/conftest.py`) runs `alembic upgrade head` against `test_db` at startup, so if your local PostgreSQL server does not ship pgvector, every DB-backed test run fails at setup.
+
+This page explains how to detect that situation and install pgvector on a local PostgreSQL server (any major version 13+; the repo is developed against 16 and 17). It mirrors what CI already does — the API workflow spins up `pgvector/pgvector:pg17` as its Postgres service.
+
+## Symptoms
+
+- `alembic upgrade head` fails with:
+
+  ```text
+  sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedFile) could not open extension control file "vector.control": No such file or directory
+  ```
+
+- `pytest api/tests/test_mcp_tool_route.py` (and any DB-backed test) errors at session setup with the same `vector.control` error, before any test runs.
+- `CREATE EXTENSION vector;` fails against your server, but works against a pgvector-enabled one that other developers reference in their `DATABASE_URL`.
+
+The root cause is that the Postgres server itself lacks the pgvector binaries — it has nothing to do with the Python `pgvector` package (which only needs `pgvector.sqlalchemy` types) or with `requirements.txt`.
+
+## Step 1 — Figure out which PostgreSQL you are running
+
+Run these against the server your `DATABASE_URL` points at (default: `postgresql+asyncpg://postgres:postgres@localhost:5432/test_db`):
+
+```bash
+# Client version (does NOT tell you the server version)
+psql --version
+
+# Server version
+psql -U postgres -h localhost -p 5432 -c 'SELECT version();'
+
+# Is the extension present in the database the tests use?
+psql -U postgres -h localhost -p 5432 -d test_db -c '\dx'
+```
+
+If `\dx` lists only `plpgsql`, pgvector is not installed. Now decide how your Postgres was installed:
+
+| How Postgres runs | How to install pgvector |
+| --- | --- |
+| Docker container (`docker ps` shows a `postgres:*` container on the port you use) | Swap the image for `pgvector/pgvector` (below), or `apk add` for Alpine-based images |
+| Homebrew (`brew services list` shows `postgresql@*`) | `brew install pgvector`, or source build for 16 |
+| Debian/Ubuntu package (`/usr/lib/postgresql/16/bin/postgres`) | `sudo apt install postgresql-16-pgvector` |
+| Fedora/RHEL package | `sudo dnf install pgvector_16` |
+| Postgres.app | Already bundled on Postgres 15+ — no action needed |
+| Alpine package (`postgres:*-alpine` image or Alpine native) | `apk add postgresql-pgvector` |
+
+You can also confirm the extension control file exists once installed: `ls "$(pg_config --sharedir)/extension/vector.control"`.
+
+## Step 2 — Install pgvector for your platform
+
+### Option A (recommended for containerized Postgres): switch to the pgvector image
+
+The [pgvector image](https://hub.docker.com/r/pgvector/pgvector) is the official `postgres` image with pgvector prebuilt — use the tag matching your server major version (`16`, `17`, …):
+
+```bash
+docker pull pgvector/pgvector:pg16
+```
+
+Replacing a running container looks like this (adjust the port, credentials, and volume):
+
+```bash
+docker stop my-postgres && docker rm my-postgres
+docker run -d --name my-postgres \
+  -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=postgres \
+  -p 5432:5432 \
+  -v my_pgdata:/var/lib/postgresql/data \
+  pgvector/pgvector:pg16
+```
+
+<Tip>
+**This repo already ships this.** `docker-compose-local.yaml` defines a `postgres` service on `pgvector/pgvector:pg17` with port `5432:5432` — running `docker compose -f docker-compose-local.yaml up postgres` gives you a pgvector-enabled server out of the box. CI's API workflow uses the same image, so local parity is one command away.
+</Tip>
+
+<Warning>
+If you point a **new** image at a **pre-existing** data volume (`POSTGRES_DB`/databases created by a different image), the locale/collation used at `initdb` time must match, and moving data between major versions (16 → 17) is not supported by an in-place volume mount. When in doubt, keep the same major version or back up and re-create the volume.
+</Warning>
+
+### Option B: Alpine package (for `postgres:*-alpine` images)
+
+Alpine-based images can install the extension directly; the package name is `postgresql-pgvector`:
+
+```bash
+# inside the container (runs as root: docker exec -u root <container> apk add ...)
+apk add postgresql-pgvector
+```
+
+<Warning>
+Container filesystems are ephemeral: `apk add` inside a running container is lost the next time the container is recreated. For Docker Desktop's bundled `postgres:16-alpine` you normally want Option A (image swap) instead; the `apk` route is a quick in-place unblock, not a durable setup.
+</Warning>
+
+### Option C: Homebrew (macOS)
+
+```bash
+brew install pgvector
+```
+
+<Note>
+As of pgvector 0.8.6, the Homebrew formula only installs the extension for the `postgresql@17` and `postgresql@18` formulas — **not** `postgresql@16`. If your Homebrew Postgres is 16, follow the source build below (or upgrade Homebrew Postgres).
+</Note>
+
+### Option D: Debian/Ubuntu (APT)
+
+Add the [PostgreSQL APT repository](https://wiki.postgresql.org/wiki/Apt#Quickstart) (PGDG), then:
+
+```bash
+sudo apt update
+sudo apt install postgresql-16-pgvector   # 16 = your server's major version
+```
+
+### Option E: Fedora / RHEL
+
+```bash
+sudo dnf install pgvector_16   # 16 = your server's major version
+```
+
+### Option F: generic source build (any platform, incl. Homebrew Postgres 16)
+
+Requires a C toolchain (on macOS: `xcode-select --install`; on Debian/Ubuntu: `sudo apt install build-essential postgresql-server-dev-16`). Supports Postgres 13+:
+
+```bash
+git clone --branch v0.8.6 https://github.com/pgvector/pgvector.git
+cd pgvector
+make
+sudo make install   # may need sudo; see note below
+```
+
+By default `make` uses the first `pg_config` on `PATH`. With Homebrew's `postgresql@16`:
+
+```bash
+PG_CONFIG="$(brew --prefix postgresql@16)/bin/pg_config"
+make PG_CONFIG="$PG_CONFIG"
+sudo env PG_CONFIG="$PG_CONFIG" make install PG_CONFIG="$PG_CONFIG"
+```
+
+To confirm the build landed in the right server:
+
+```bash
+"$(brew --prefix postgresql@16)/bin/pg_config" --sharedir    # -> .../share/postgresql@16
+ls "$(brew --prefix postgresql@16)/share/postgresql@16/extension/vector.control"
+```
+
+## Step 3 — Enable the extension (per database)
+
+The extension must be created in **each database** that uses it. The Dograh migration `dc33eef8dabe_add_document_tables` already runs `CREATE EXTENSION IF NOT EXISTS vector`, so once the binaries are installed, migrations and the test session enable it automatically. To enable it explicitly on the test database:
+
+```bash
+psql -U postgres -h localhost -p 5432 -d test_db -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+```
+
+`CREATE EXTENSION vector` requires database superuser privileges (the `postgres` user in the repo's default `DATABASE_URL`). pgvector is not a *trusted* extension, so a non-superuser role cannot create it unless a superuser grants it.
+
+## Step 4 — Verify
+
+```bash
+psql -U postgres -h localhost -p 5432 -d test_db -c 'CREATE EXTENSION IF NOT EXISTS vector; SELECT vector_version();'
+```
+
+`vector_version()` exists in pgvector 0.7.0+. For older versions, confirm through the catalog:
+
+```bash
+psql -U postgres -h localhost -p 5432 -d test_db -c "SELECT extversion FROM pg_extension WHERE extname = 'vector';"
+```
+
+## Step 5 — Run the previously failing tests
+
+```bash
+# from the repo root, with your normal test env loaded (api/conftest.py creates
+# test_db and runs alembic upgrade head, which enables the extension)
+pytest api/tests/test_mcp_tool_route.py -q
+```
+
+If the whole suite was failing at setup, run a small DB-backed test first (for example `api/tests/test_mcp_tool_route.py`) to confirm the session initializes.
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+| --- | --- | --- |
+| `could not open extension control file "vector.control"` | pgvector binaries are not installed on this server | Install per Step 2 (check the `\dx` output after `CREATE EXTENSION`; the server has its own extension directory) |
+| `permission denied to create extension "vector"` | Running `CREATE EXTENSION` as a non-superuser | Use the `postgres` superuser, or `SET ROLE`/grant as a superuser |
+| `could not load library "$libdir/vector"` / `incompatible library` | Extension built against a different Postgres major version than the server | Rebuild/reinstall for the exact server major version (`make clean && make && make install` with the correct `PG_CONFIG`) |
+| `extension "vector" has no installation path or version` | Mixed pgvector versions across servers | Confirm you are connecting to the server you installed into (`\conninfo`) |
+| `brew install pgvector` doesn't enable it for Postgres 16 | The formula only targets `postgresql@17`/`@18` | Source build with `PG_CONFIG` (Option F) or upgrade Homebrew Postgres |
+| Works on one machine, not another, with the same `.env.test` | The other machine's server lacks the binaries | Repeat installation on that server — the extension is server-side by design |
+
+## Temporary workaround: point DATABASE_URL at a pgvector-enabled server
+
+If installing pgvector immediately is not possible, the test suite runs against any Postgres that has the extension. Override `DATABASE_URL` in your test environment (for example, a locally running `pgvector/pgvector` container or the `postgres` service from `docker-compose-local.yaml`):
+
+```bash
+export DATABASE_URL='postgresql+asyncpg://postgres:postgres@localhost:5432/test_db'   # pgvector-enhanced server
+pytest api/tests/test_mcp_tool_route.py -q
+```
+
+Use the same override with `alembic upgrade head` when developing locally:
+
+```bash
+DATABASE_URL='postgresql+asyncpg://postgres:postgres@localhost:5432/test_db' alembic -c api/alembic.ini upgrade head
+```
+
+This is a stopgap, not a fix: other developers and CI keep working because they install (or already run) pgvector on their own server.
